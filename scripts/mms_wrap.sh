@@ -3,4 +3,4 @@
 # inspected/debugged afterwards without screenshots.
 cd /home/lolo/micromouse_algo
 export MM_PROTO=1
-stdbuf -oL ./build/mms 2>>/tmp/opencode/algo_err.log | tee -a /tmp/opencode/algo_out.log
+stdbuf -oL ./build/mms "$@" 2>>/tmp/opencode/algo_err.log | tee -a /tmp/opencode/algo_out.log
