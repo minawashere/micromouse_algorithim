@@ -60,26 +60,27 @@ int main(int argc, char** argv) {
   SimWorld world(truth, verbose);
   Solver solver(world, truth, cfg);
   bool ok = solver.solve();
+  // Score & run stats come from the SIMULATOR's own accounting (same numbers
+  // the real mms GUI would report), not from the solver's shadow counters.
+  const ScoreStats& ws = world.stats();
   const auto& st = solver.stats();
   if (json) {
     std::printf(
         "{\"ok\":%s,\"score\":%.2f,\"total_dist\":%.1f,\"total_eff\":%.1f,"
         "\"total_turns\":%d,\"best_run_dist\":%.1f,\"best_run_eff\":%.1f,"
-        "\"best_run_turns\":%d,\"sprint_dist\":%d,\"sprint_turns\":%d,"
+        "\"best_run_turns\":%.0f,\"sprint_dist\":%d,\"sprint_turns\":%d,"
         "\"astar_calls\":%d,\"astar_exp\":%d,\"trips\":%d,\"replans\":%d,"
         "\"cert_at_cells\":%d,\"cert_known_cost\":%.3f,\"cert_bound\":%.3f}\n",
-        ok ? "true" : "false", st.bestRunEff >= 0 ? st.bestRunTurns + st.bestRunEff + 0.1 * (st.totalTurns + st.totalEff) : 2000.0,
-        st.totalDistance, st.totalEff, st.totalTurns, st.bestRunDist,
-        st.bestRunEff, st.bestRunTurns, st.sprintDist, st.sprintTurns,
-        st.aStarCalls, st.aStarExpansions, st.trips, st.replans,
+        ok ? "true" : "false", ws.score(),
+        ws.totalDistance, ws.totalEffDistance, ws.totalTurns, ws.bestRunDistance,
+        ws.bestRunEff, ws.bestRunTurns, st.sprintDist, st.sprintTurns,        st.aStarCalls, st.aStarExpansions, st.trips, st.replans,
         st.certifiedAfterCells, st.certBestKnown, st.certBound);
   } else {
-    std::printf("ok=%d score=%.2f\n", ok ? 1 : 0,
-                st.bestRunEff >= 0 ? st.bestRunTurns + st.bestRunEff + 0.1 * (st.totalTurns + st.totalEff) : 2000.0);
-    std::printf("total: dist=%.1f eff=%.1f turns=%d\n", st.totalDistance,
-                st.totalEff, st.totalTurns);
-    std::printf("best-run: dist=%.1f eff=%.1f turns=%d\n", st.bestRunDist,
-                st.bestRunEff, st.bestRunTurns);
+    std::printf("ok=%d score=%.2f\n", ok ? 1 : 0, ws.score());
+    std::printf("total: dist=%.1f eff=%.1f turns=%d\n", ws.totalDistance,
+                ws.totalEffDistance, ws.totalTurns);
+    std::printf("best-run: dist=%.1f eff=%.1f turns=%.0f\n", ws.bestRunDistance,
+                ws.bestRunEff, ws.bestRunTurns);
     std::printf("sprint: dist=%d turns=%d\n", st.sprintDist, st.sprintTurns);
     std::printf("astar: calls=%d expansions=%d trips=%d replans=%d\n",
                 st.aStarCalls, st.aStarExpansions, st.trips, st.replans);

@@ -71,6 +71,7 @@ class Solver {
     my_ = 0;
     mdir_ = D_N;
     known_ = KnownMaze{};
+    sealed_ = false;
     vizInit();
     if (!phase1()) { if (getenv("MM_DEBUG")) fprintf(stderr, "PHASE1 FAILED\n"); return false; }
     if (!phase2()) { if (getenv("MM_DEBUG")) fprintf(stderr, "PHASE2 FAILED\n"); return false; }
@@ -151,10 +152,83 @@ class Solver {
   // Follow a goal-directed plan from current pose with sense+replan.
   enum struct RunStatus { kDone, kStuck };
 
+  // Snapshot with unknown faces treated as walls (for sealed open-loop plans).
+  Maze pessimisticSnapshot() const {
+    Maze m = known_.snapshot();
+    for (int y = 0; y < MAZE_H; ++y)
+      for (int x = 0; x < MAZE_W; ++x)
+        for (int di = 0; di < kDirCount; ++di)
+          if (known_.status(x, y, static_cast<Dir>(di)) == kUnknown)
+            m.setWall(x, y, static_cast<Dir>(di));
+    return m;
+  }
+
+  // (F) Open-loop executor for the sealed maze: drive `states` from the
+  // current pose in one pass -- batching consecutive straight cells into single
+  // moveForward(N) calls, turning in place for dir changes, no sensing and no
+  // replanning. All faces along a certified path are known-open by construction,
+  // so a crash reply cannot happen (kStuck on it anyway, defensively).
+  template <class GoalFn>
+  RunStatus driveOpen(const std::vector<State>& plan, GoalFn atGoal) {
+    size_t pi = SIZE_MAX;
+    for (size_t j = 0; j < plan.size(); ++j)
+      if (plan[j].x == mx_ && plan[j].y == my_ && plan[j].dir == mdir_) {
+        pi = j;
+        break;
+      }
+    if (pi == SIZE_MAX) return RunStatus::kStuck;  // pose not on plan: replan
+    if (atGoal(mx_, my_)) return RunStatus::kDone;
+    while (pi + 1 < plan.size()) {
+      const State& a = plan[pi];
+      const State& b = plan[pi + 1];
+      if (a.dir == b.dir) {
+        // straight batch across plans[j..j+n]
+        int run = 1;
+        while (pi + run + 1 < plan.size() &&
+               plan[pi + run].dir == plan[pi + run + 1].dir) {
+          ++run;
+        }
+        if (!w_.moveForward(run)) return RunStatus::kStuck;
+        advanceStats(run);
+        mx_ += static_cast<int>(kDx[mdir_]) * run;
+        my_ += static_cast<int>(kDy[mdir_]) * run;
+        pi += run;
+        onCellVisit();
+      } else {
+        // turn in place until facing b.dir (up to 2 x 90 deg for a U-turn)
+        int rel = (static_cast<int>(b.dir) - static_cast<int>(a.dir) + kDirCount) %
+                  kDirCount;
+        while (mdir_ != b.dir) {
+          if (rel == 1 || rel == 2) {
+            w_.turnRight();
+            mdir_ = static_cast<Dir>((mdir_ + 1) % kDirCount);
+          } else {
+            w_.turnLeft();
+            mdir_ = static_cast<Dir>((mdir_ + 3) % kDirCount);
+          }
+          ++st_.totalTurns;
+          if (runAtStart_) ++curRunTurns_;
+        }
+        ++pi;
+      }
+      if (atGoal(mx_, my_)) return RunStatus::kDone;
+    }
+    return atGoal(mx_, my_) ? RunStatus::kDone : RunStatus::kStuck;
+  }
+
   // Follow a goal-directed plan from current pose with sense+replan.
   // kStuck = planning failed mid-trip (partner may succeed from new pose).
   template <class GoalFn>
   RunStatus runTo(GoalFn atGoal, const PhaseHeur& ph, const Cost* hOverride = nullptr) {
+    // (F) sealed maze: no sensing/replanning during the endgame runs -- drive
+    // open-loop on a *pessimistic* snapshot (unknown faces treated as walls),
+    // so every crossed face is provably known-open and a crash is impossible.
+    if (sealed_) {
+      Maze pes = pessimisticSnapshot();
+      PathResult fin = plan(mx_, my_, mdir_, atGoal, pes, ph, hOverride);
+      if (!fin.found) return RunStatus::kStuck;
+      return driveOpen(fin.states, atGoal);
+    }
     const int kMaxSteps = 100000;  // safety breaker
     int steps = 0;
     PathResult cur = plan(mx_, my_, mdir_, atGoal, known_.snapshot(), ph, hOverride);
@@ -255,6 +329,7 @@ class Solver {
             mdir_ = static_cast<Dir>((mdir_ + 1) % kDirCount);
           }
           ++st_.totalTurns;
+if (runAtStart_) ++curRunTurns_;
         }
       }
       // run-boundary bookkeeping (start / goal visits)
@@ -453,6 +528,7 @@ class Solver {
           st_.certBound = st_.certBestKnown;
           certified_ = best;
           vizFinal(best);
+          sealed_ = true;  // (F): endgame drives open-loop, no sense/replan
           return true;
         }
         // 3: score frontier edges (A): one flood from the mouse gives the exact
@@ -520,6 +596,7 @@ class Solver {
           st_.certBound = st_.certBestKnown;
           certified_ = best;
           vizFinal(best);
+          sealed_ = true;
           return true;
         }
         // 4: exploration trip to the frontier cell
@@ -583,7 +660,8 @@ class Solver {
         mdir_ = static_cast<Dir>((mdir_ + 3) % kDirCount);
       }
       ++st_.totalTurns;
-      sense();
+if (runAtStart_) ++curRunTurns_;
+      if (!sealed_) sense();
     }
   }
   // Rotate in place (up to 4 x 90°) until face d is in front, sensing sides.
@@ -593,6 +671,7 @@ class Solver {
       w_.turnRight();
       mdir_ = static_cast<Dir>((mdir_ + 1) % kDirCount);
       ++st_.totalTurns;
+if (runAtStart_) ++curRunTurns_;
       sense();
     }
   }
@@ -632,6 +711,7 @@ class Solver {
   int dbgTx_ = -1, dbgTy_ = -1;
   bool skipTarget_[MAZE_W * MAZE_H] = {};  // trip targets proven unreachable
   bool allowLazy_ = false;                 // mirrors cfg_.allowLazy
+  bool sealed_ = false;  // (F) true after certification: endgame is open-loop
 
   IWorld& w_;
   const Maze& truth_;

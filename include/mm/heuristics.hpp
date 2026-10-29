@@ -11,27 +11,36 @@
 namespace mm {
 
 // Multi-source Dijkstra, unit cell cost (kCostUnit per cell). sources: cell idx.
+// NOTE (E): every crossing costs exactly kCostUnit, so this is implemented as a
+// plain FIFO flood (BFS) -- with uniform edge cost it produces tables
+// bit-identical to a priority-queue Dijkstra: the i-th discovery of a FIFO flood
+// is always at minimal distance, no relaxation is ever needed afterwards.
+// If edge cost EVER becomes non-uniform (per-cell turn penalties, goal bonus,
+// weighted hops), a plain BFS is no longer exact -- restore a Dijkstra here.
 inline void dijkstraCells(const Maze& maze, const int* sources, int n,
                           Cost out[MAZE_W * MAZE_H]) {
   struct Item { Cost d; int c; };
-  struct Cmp { bool operator()(const Item& a, const Item& b) const { return a.d > b.d; } };
-  std::priority_queue<Item, std::vector<Item>, Cmp> pq;
   for (int i = 0; i < MAZE_W * MAZE_H; ++i) out[i] = INT32_MAX;
+  // FIFO wavefront; capacity: each cell is pushed at most once (visited-on-push)
+  int fifo[MAZE_W * MAZE_H];
+  int head = 0, tail = 0;
   for (int i = 0; i < n; ++i) {
-    if (out[sources[i]] == INT32_MAX) { out[sources[i]] = 0; pq.push({0, sources[i]}); }
+    int c = sources[i];
+    if (out[c] == INT32_MAX) { out[c] = 0; fifo[tail++] = c; }
   }
-  while (!pq.empty()) {
-    Item it = pq.top(); pq.pop();
-    int c = it.c, x = c & 0xF, y = (c >> 4) & 0xF;
-    if (it.d > out[c]) continue;
+  while (head != tail) {
+    int c = fifo[head++];
+    int x = c & 0xF, y = (c >> 4) & 0xF;
     for (int di = 0; di < kDirCount; ++di) {
       Dir d = static_cast<Dir>(di);
       int nx = x + kDx[d], ny = y + kDy[d];
       if (nx < 0 || ny < 0 || nx >= MAZE_W || ny >= MAZE_H) continue;  // border
       if (maze.wall(x, y, d)) continue;
       int nc = idx(nx, ny);
-      Cost nd = it.d + kCostUnit;
-      if (nd < out[nc]) { out[nc] = nd; pq.push({nd, nc}); }
+      if (out[nc] == INT32_MAX) {
+        out[nc] = out[c] + kCostUnit;
+        fifo[tail++] = nc;
+      }
     }
   }
 }
