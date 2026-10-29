@@ -50,12 +50,18 @@ class MmsWorld : public IWorld {
     std::printf(fmt, a...);
     std::printf("\n");
     std::fflush(stdout);
+    if (getenv("MM_PROTO")) fprintf(stderr, "SENT: ");
+    if (getenv("MM_PROTO")) { fprintf(stderr, fmt, a...); fprintf(stderr, "\n"); }
   }
   std::string readLine() {
     std::string s;
     int c;
     while ((c = std::getchar()) != '\n' && c != EOF)
       if (c != '\r') s.push_back(static_cast<char>(c));
+    if (getenv("MM_PROTO") && c == EOF)
+      fprintf(stderr, "PROTOCOL: EOF on stdin (simulator closed the pipe)\n");
+    else if (getenv("MM_PROTO"))
+      fprintf(stderr, "RECV: %s\n", s.c_str());
     return s;
   }
   int intValue(const char* cmd) {

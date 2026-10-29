@@ -26,8 +26,12 @@ class IWorld {
   virtual void clearAllColor() {}
   virtual void clearAllText() {}
   virtual void resetDisplay() {}
-  // debug: report true pose (no-op by default)
-  virtual void debugPos(int* x, int* y, int* dir) { (void)x; (void)y; (void)dir; }
+  // debug: report true pose (default: not available => -1, check skipped)
+  virtual void debugPos(int* x, int* y, int* dir) {
+    if (x) *x = -1;
+    if (y) *y = -1;
+    if (dir) *dir = -1;
+  }
 };
 
 }  // namespace mm

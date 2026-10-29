@@ -11,6 +11,5 @@ int main() {
   mm::Maze assumedGoals;  // default: center 2x2
   mm::SolverConfig cfg;
   mm::Solver solver(world, assumedGoals, cfg);
-  solver.solve();
-  return 0;
+  return solver.solve() ? 0 : 2;
 }

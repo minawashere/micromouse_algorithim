@@ -15,6 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 RUN = ROOT / "build" / "run"
+EXTRA = []
 
 RECIPES = {
     "p1opt-p2opt": ["--p1heur", "opt", "--p2heur", "opt"],
@@ -39,10 +40,14 @@ TURN_RECIPES = {
 
 
 def one(maze: Path, extra):
+    import time
     try:
-        p = subprocess.run([str(RUN), "--maze", str(maze), "--json", *extra],
-                           capture_output=True, text=True, timeout=30)
+        t0 = time.perf_counter()
+        p = subprocess.run([str(RUN), "--maze", str(maze), "--json", *extra, *EXTRA],
+                           capture_output=True, text=True, timeout=60)
+        dt = time.perf_counter() - t0
         j = json.loads(p.stdout)
+        j["ms"] = dt * 1000.0
     except Exception:
         return None
     return j
@@ -54,7 +59,11 @@ def main():
     ap.add_argument("--max", type=int, default=0, help="limit number of mazes")
     ap.add_argument("--sweep", choices=["heur", "eps", "turn"], default="heur")
     ap.add_argument("--jobs", type=int, default=8)
-    args = ap.parse_args()
+    ap.add_argument("--extra", nargs="*", default=[],
+                    help="extra CLI args passed to every run (e.g. --turncost 0)")
+    args, extra_args = ap.parse_known_args()
+    global EXTRA
+    EXTRA = args.extra + extra_args
 
     mazes = sorted(args.mazes.glob("*.txt"))
     if args.max:
@@ -73,7 +82,8 @@ def main():
             results[(rname, m.name)] = f.result()
 
     print(f"{'recipe':16s} {'n':>5s} {'ok':>5s} {'avgScore':>9s} {'medScore':>9s} "
-          f"{'avgDist':>8s} {'avgEff':>8s} {'avgTrn':>7s} {'avgSpr':>7s}")
+          f"{'avgDist':>8s} {'avgEff':>8s} {'avgTrn':>7s} {'avgTrps':>7s} "
+          f"{'avgRpl':>7s} {'avgExp':>8s} {'avgMs':>7s}")
     for rname, extra in recipes.items():
         rows = [results[(rname, m.name)] for m in mazes]
         solid = [r for r in rows if r and r["ok"]]
@@ -83,7 +93,8 @@ def main():
         med = scores[n // 2] if n else 0
         print(f"{rname:16s} {len(mazes):5d} {n:5d} {avg('score'):9.2f} {med:9.2f} "
               f"{avg('total_dist'):8.1f} {avg('total_eff'):8.1f} "
-              f"{avg('total_turns'):7.1f} {avg('sprint_dist'):7.1f}")
+              f"{avg('total_turns'):7.1f} {avg('trips'):7.1f} "
+              f"{avg('replans'):7.1f} {avg('astar_exp'):8.1f} {avg('ms'):7.0f}")
 
 
 if __name__ == "__main__":

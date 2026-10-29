@@ -39,6 +39,10 @@ struct SolverConfig {
   PhaseHeur phase1, phase2;
   Cost turnCost = kCostUnit;
   bool visualize = false;
+  // opt-in: stop phase 2 as soon as no frontier edge repays its trip cost
+  // (saving <= driving distance). Trades the exact best-path guarantee for
+  // less exploration. Default: off (certificate = optimal path).
+  bool allowLazy = false;
 };
 
 struct SolverStats {
@@ -59,7 +63,7 @@ struct SolverStats {
 class Solver {
  public:
   Solver(IWorld& w, const Maze& truth, const SolverConfig& cfg)
-      : w_(w), truth_(truth), cfg_(cfg) {}
+      : w_(w), truth_(truth), cfg_(cfg), allowLazy_(cfg.allowLazy) {}
 
   bool solve() {  // false on crash / planning failure
     st_ = SolverStats{};
@@ -67,10 +71,11 @@ class Solver {
     my_ = 0;
     mdir_ = D_N;
     known_ = KnownMaze{};
-    if (!phase1()) return false;
-    if (!phase2()) return false;
-    if (!phase3()) return false;
-    if (!phase4()) return false;
+    vizInit();
+    if (!phase1()) { if (getenv("MM_DEBUG")) fprintf(stderr, "PHASE1 FAILED\n"); return false; }
+    if (!phase2()) { if (getenv("MM_DEBUG")) fprintf(stderr, "PHASE2 FAILED\n"); return false; }
+    if (!phase3()) { if (getenv("MM_DEBUG")) fprintf(stderr, "PHASE3 FAILED\n"); return false; }
+    if (!phase4()) { if (getenv("MM_DEBUG")) fprintf(stderr, "PHASE4 FAILED\n"); return false; }
     return true;
   }
   const SolverStats& stats() const { return st_; }
@@ -156,6 +161,7 @@ class Solver {
     if (!cur.found) return RunStatus::kStuck;
     while (steps++ < kMaxSteps) {
       bool changed = sense();  // sense at every cell visit (3 faces + back)
+      vizVisit();
       if (getenv("MM_TRACE2"))
         fprintf(stderr, "RUNTO pos=(%d,%d,%d) chg=%d faces=%d%d%d%d\n", mx_, my_,
                 (int)mdir_, changed, (int)known_.status(mx_, my_, D_N),
@@ -186,15 +192,13 @@ class Solver {
             Astar ax;
             PathResult rz = ax.search(snap, mx_, my_, mdir_, zc, zero, atGoal);
             fprintf(stderr,
-                    "STUCK at (%d,%d,%d) target=(%d,%d) lead=%d max=%d unknown=%d "
-                    "tgtN%d E%d S%d W%d retry0=%d exp=%d\n",
-                    mx_, my_, (int)mdir_, dbgTx_, dbgTy_, dd[idx(mx_, my_)],
+                    "STUCK at (%d,%d,%d) goal=%d,%d lead=%d unknown=%d\n%s",
+                    mx_, my_, (int)mdir_, truth_.goalCell(0).x, truth_.goalCell(0).y,
                     dd[idx(mx_, my_)] == INT32_MAX, known_.unknownCount(),
-                    (int)known_.status(dbgTx_, dbgTy_, D_N),
-                    (int)known_.status(dbgTx_, dbgTy_, D_E),
-                    (int)known_.status(dbgTx_, dbgTy_, D_S),
-                    (int)known_.status(dbgTx_, dbgTy_, D_W),
-                    rz.found ? 1 : 0, rz.expansions);
+                    dumpMaze(snap).c_str());
+            FILE* f = fopen("/tmp/opencode/dumpsnap.txt", "w");
+            fprintf(f, "%s", dumpMaze(snap).c_str());
+            fclose(f);
           }
           return RunStatus::kStuck;
         }
@@ -203,7 +207,7 @@ class Solver {
       {
         int wx, wy, wd;
         w_.debugPos(&wx, &wy, &wd);
-        if (wx != mx_ || wy != my_ || wd != (int)mdir_) {
+        if (wx >= 0 && (wx != mx_ || wy != my_ || wd != (int)mdir_)) {
           fprintf(stderr, "POSE DESYNC solver=(%d,%d,%d) world=(%d,%d,%d)\n", mx_,
                   my_, (int)mdir_, wx, wy, wd);
           return RunStatus::kStuck;
@@ -287,6 +291,73 @@ class Solver {
   bool isGoalHere() const {
     return (mx_ == MAZE_W / 2 || mx_ == MAZE_W / 2 - 1) &&
            (my_ == MAZE_H / 2 || my_ == MAZE_H / 2 - 1);
+  }
+
+  // ---------- visualization (worlds that ignore setColor/setText: no-op) ----------
+  // Colors: r=goal, g=explored, o=frontier trip target, b=certified best path.
+  // Text: number in each visited cell = optimistic steps-to-center at visit
+  // time; refreshed with the final true distance once the path is certified.
+  bool cellVis_[MAZE_W * MAZE_H] = {};
+
+  void vizInit() {
+    w_.clearAllColor();
+    w_.clearAllText();
+    std::memset(cellVis_, 0, sizeof(cellVis_));
+    vizGoals();
+  }
+
+  void vizGoals() {
+    Maze snap = known_.snapshot();
+    for (int i = 0; i < snap.goalCount() && i < 4; ++i) {
+      Cell g = snap.goalCell(i);
+      w_.setColor(g.x, g.y, 'r');
+    }
+  }
+
+  // distance-to-center table on the current known map (unknown=optimistic)
+  void vizDistanceTable(const Maze& snap, Cost out[kMAZE]) {
+    int src[4], n = 0;
+    for (int i = 0; i < 4 && i < snap.goalCount(); ++i) {
+      Cell g = snap.goalCell(i);
+      src[n++] = idx(g.x, g.y);
+    }
+    dijkstraCells(snap, src, n, out);
+  }
+
+  void vizVisit() {
+    int c = idx(mx_, my_);
+    if (cellVis_[c]) return;
+    cellVis_[c] = true;
+    w_.setColor(mx_, my_, 'g');
+    Maze snap = known_.snapshot();
+    Cost dc[kMAZE];
+    vizDistanceTable(snap, dc);
+    if (dc[c] < INT32_MAX) {
+      char b[8];
+      std::snprintf(b, sizeof b, "%d", dc[c] / kCostUnit);
+      w_.setText(mx_, my_, b);
+    }
+  }
+
+  void vizTripTarget(int tx, int ty) { w_.setColor(tx, ty, 'o'); }
+
+  void vizFinal(const PathResult& best) {
+    Maze snap = known_.snapshot();
+    w_.clearAllColor();
+    vizGoals();
+    // final true distances on every visited cell
+    Cost dc[kMAZE];
+    vizDistanceTable(snap, dc);
+    for (int y = 0; y < MAZE_H; ++y)
+      for (int x = 0; x < MAZE_W; ++x) {
+        int c = idx(x, y);
+        if (!cellVis_[c] || dc[c] == INT32_MAX) continue;
+        char b[8];
+        std::snprintf(b, sizeof b, "%d", dc[c] / kCostUnit);
+        w_.setText(x, y, b);
+      }
+    // certified best path in faint blue (cyan)
+    for (auto s : best.states) w_.setColor(s.x, s.y, 'c');
   }
 
   // ---------- phases ----------
@@ -381,34 +452,79 @@ class Solver {
           st_.certifiedAfterCells = static_cast<int>(st_.totalDistance);
           st_.certBound = st_.certBestKnown;
           certified_ = best;
+          vizFinal(best);
           return true;
         }
-        // 3: pick best frontier edge: value = saving - tripCost
+        // 3: score frontier edges (A): one flood from the mouse gives the exact
+        // turn-free driving distance to every edge target at once (the cell
+        // graph is undirected, so the old per-edge flood from each edge gave
+        // the same number): O(|frontier|) floods become exactly one.
+        Cost dm[kMAZE];
+        int msrc[1] = {idx(mx_, my_)};
+        dijkstraCells(snap, msrc, 1, dm);
+        double vband_ = 1.0;  // cells; (B) tie window, tunable via MM_VBAND
+        if (const char* v = getenv("MM_VBAND")) vband_ = atof(v);
+        const double VBAND = vband_;
         const FrontierEdge* bestEdge = nullptr;
         double bestVal = -1e18;
-        for (auto& e : frontier) {
+        for (const auto& e : frontier) {
           if (skipTarget_[idx(e.tx, e.ty)]) continue;
-          Cost distTable[kMAZE];
-          int s1[1] = {idx(e.tx, e.ty)};
-          dijkstraCells(snap, s1, 1, distTable);
-          if (distTable[idx(mx_, my_)] == INT32_MAX) continue;
-          double trip = distTable[idx(mx_, my_)] / (double)kCostUnit;
+          if (dm[idx(e.tx, e.ty)] == INT32_MAX) continue;  // sealed-off target
+          double trip = dm[idx(e.tx, e.ty)] / (double)kCostUnit;
           double saving = (best.cost - e.bound) / (double)kCostUnit;
           double val = saving - trip;
-          if (bestEdge == nullptr || val > bestVal) {
-            bestVal = val;
-            bestEdge = &e;
-          }
+          if (val > bestVal) bestVal = val;
         }
-        if (bestEdge == nullptr) {
+        if (bestVal <= -1e17) {
           // nowhere reachable with unknowns in-band: cannot improve: certify
           st_.certifiedAfterCells = static_cast<int>(st_.totalDistance);
           st_.certBound = st_.certBestKnown;
           certified_ = best;
+          vizFinal(best);
+          return true;
+        }
+        // (B) tie-break among the value plateau: nearest to the mouse first,
+        // then more promising bound, then more in-band faces sharing the same
+        // target cell (one trip services several edges).
+        int bestTrip = INT32_MAX;
+        Cost bestBound = INT32_MAX;
+        int bestShared = -1;
+        for (const auto& e : frontier) {
+          if (skipTarget_[idx(e.tx, e.ty)]) continue;
+          if (dm[idx(e.tx, e.ty)] == INT32_MAX) continue;
+          double trip = dm[idx(e.tx, e.ty)] / (double)kCostUnit;
+          double saving = (best.cost - e.bound) / (double)kCostUnit;
+          double val = saving - trip;
+          if (val < bestVal - VBAND) continue;
+          // how many other in-band edges share this target cell?
+          int shared = 0;
+          for (const auto& o : frontier)
+            if (o.tx == e.tx && o.ty == e.ty) ++shared;
+          bool better = false;
+          if (trip < bestTrip) better = true;
+          else if (trip == bestTrip) {
+            if (e.bound < bestBound) better = true;
+            else if (e.bound == bestBound && shared > bestShared) better = true;
+          }
+          if (better) {
+            bestEdge = &e;
+            bestTrip = static_cast<int>(trip);
+            bestBound = e.bound;
+            bestShared = shared;
+          }
+        }
+        // (D) lazy mode: nothing pays for itself (saving <= trip for all) and
+        // the user accepts possibly non-optimal best paths => certify now.
+        if (allowLazy_ && bestVal <= 0) {
+          st_.certifiedAfterCells = static_cast<int>(st_.totalDistance);
+          st_.certBound = st_.certBestKnown;
+          certified_ = best;
+          vizFinal(best);
           return true;
         }
         // 4: exploration trip to the frontier cell
         int tx = bestEdge->tx, ty = bestEdge->ty;
+        vizTripTarget(tx, ty);
         if (mx_ == tx && my_ == ty) {
           faceForUnknown(bestEdge->d);
         } else {
@@ -515,6 +631,7 @@ class Solver {
   bool isGoalTruth(int x, int y) const { return truth_.isGoal(x, y); }
   int dbgTx_ = -1, dbgTy_ = -1;
   bool skipTarget_[MAZE_W * MAZE_H] = {};  // trip targets proven unreachable
+  bool allowLazy_ = false;                 // mirrors cfg_.allowLazy
 
   IWorld& w_;
   const Maze& truth_;

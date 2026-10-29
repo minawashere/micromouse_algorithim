@@ -1,4 +1,6 @@
 #pragma once
+// Sensed-state maze: 3 bits (8?) per face: kUnknown / kOpen / kWall.
+#include <cstdio>
 // KnownMaze: what the mouse has discovered so far. Per (cell, direction):
 //   0 = unknown, 1 = known open, 2 = known wall. Symmetric updates.
 // Snapshots into a `Maze` (walls only) for A*/Dijkstra: that snapshot is
@@ -20,6 +22,10 @@ class KnownMaze {
   }
   void setStatus(int x, int y, Dir d, WallStatus s) {
     if (x < 0 || y < 0 || x >= MAZE_W || y >= MAZE_H) return;
+    if (s != kUnknown && status(x, y, d) == kWall) {
+      // watchdog: immutability of sensed walls
+      fprintf(stderr, "WALL FLIP at (%d,%d) d=%d old=2 new=%d\n", x, y, (int)d, (int)s);
+    }
     st_[idx(x, y)] &= ~(0x3 << (2 * d));
     st_[idx(x, y)] |= (s << (2 * d));
     // symmetric neighbor side

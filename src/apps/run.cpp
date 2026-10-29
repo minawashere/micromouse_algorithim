@@ -35,6 +35,8 @@ int main(int argc, char** argv) {
                                          : HeurKind::kOptimistic;
     } else if (!strcmp(argv[i], "--turncost")) {
       cfg.turnCost = atoi(next().c_str());
+    } else if (!strcmp(argv[i], "--allow-lazy")) {
+      cfg.allowLazy = true;
     } else {
       std::fprintf(stderr, "unknown arg %s\n", argv[i]);
       return 2;
