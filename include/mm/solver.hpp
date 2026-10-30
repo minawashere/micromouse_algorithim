@@ -14,14 +14,14 @@
 // crossing its FIRST unknown edge (a->b) costs >= ds[a]+1+dc[b]. The set of
 // edges with bound <= C_P is the "improvement band": only unknowns inside it
 // can still improve the run. Certify when the band is empty.
+#include "mm/astar.hpp"
+#include "mm/heuristics.hpp"
+#include "mm/known_maze.hpp"
+#include "mm/maze_io.hpp"
+#include "mm/world.hpp"
 #include <algorithm>
 #include <cstdlib>
 #include <vector>
-#include "mm/astar.hpp"
-#include "mm/known_maze.hpp"
-#include "mm/heuristics.hpp"
-#include "mm/maze_io.hpp"
-#include "mm/world.hpp"
 
 namespace mm {
 
@@ -31,13 +31,13 @@ enum struct HeurKind : int { kManhattan = 0, kTrueDistance, kOptimistic };
 
 struct PhaseHeur {
   HeurKind kind = HeurKind::kOptimistic;
-  int epsNum = 2;  // weighted A* default: h * 2 (explore fast, path may cost +
+  int epsNum = 2; // weighted A* default: h * 2 (explore fast, path may cost +
   int epsDen = 1;
 };
 
 struct SolverConfig {
   PhaseHeur phase1, phase2;
-  Cost turnCost = kCostUnit;
+  Cost turnCost = 64;
   bool visualize = false;
   // opt-in: stop phase 2 as soon as no frontier edge repays its trip cost
   // (saving <= driving distance). Trades the exact best-path guarantee for
@@ -61,11 +61,11 @@ struct SolverStats {
 };
 
 class Solver {
- public:
-  Solver(IWorld& w, const Maze& truth, const SolverConfig& cfg)
+public:
+  Solver(IWorld &w, const Maze &truth, const SolverConfig &cfg)
       : w_(w), truth_(truth), cfg_(cfg), allowLazy_(cfg.allowLazy) {}
 
-  bool solve() {  // false on crash / planning failure
+  bool solve() { // false on crash / planning failure
     st_ = SolverStats{};
     mx_ = 0;
     my_ = 0;
@@ -73,29 +73,54 @@ class Solver {
     known_ = KnownMaze{};
     sealed_ = false;
     vizInit();
-    if (!phase1()) { if (getenv("MM_DEBUG")) fprintf(stderr, "PHASE1 FAILED\n"); return false; }
-    if (!phase2()) { if (getenv("MM_DEBUG")) fprintf(stderr, "PHASE2 FAILED\n"); return false; }
-    if (!phase3()) { if (getenv("MM_DEBUG")) fprintf(stderr, "PHASE3 FAILED\n"); return false; }
-    if (!phase4()) { if (getenv("MM_DEBUG")) fprintf(stderr, "PHASE4 FAILED\n"); return false; }
+    if (!phase1()) {
+      if (getenv("MM_DEBUG"))
+        fprintf(stderr, "PHASE1 FAILED\n");
+      return false;
+    }
+    if (!phase2()) {
+      if (getenv("MM_DEBUG"))
+        fprintf(stderr, "PHASE2 FAILED\n");
+      return false;
+    }
+    if (!phase3()) {
+      if (getenv("MM_DEBUG"))
+        fprintf(stderr, "PHASE3 FAILED\n");
+      return false;
+    }
+    if (!phase4()) {
+      if (getenv("MM_DEBUG"))
+        fprintf(stderr, "PHASE4 FAILED\n");
+      return false;
+    }
     return true;
   }
-  const SolverStats& stats() const { return st_; }
+  const SolverStats &stats() const { return st_; }
 
- private:
+private:
   enum struct Phase { P1, P2 };
 
   // ---------- planning ----------
   // Run stats phase; see phase docs above.
   template <class GoalFn>
-  PathResult plan(int sx, int sy, Dir sdir, GoalFn atGoal, const Maze& snap,
-                  const PhaseHeur& ph, const Cost* hOverride = nullptr) {
+  PathResult plan(int sx, int sy, Dir sdir, GoalFn atGoal, const Maze &snap,
+                  const PhaseHeur &ph, const Cost *hOverride = nullptr) {
     Cost tbl[kMAZE];
-    const Cost* h = hOverride;
+    const Cost *h = hOverride;
     if (!h) {
       switch (ph.kind) {
-        case HeurKind::kManhattan: hManhattanAnyGoal(snap, tbl); h = tbl; break;
-        case HeurKind::kTrueDistance: hTrueDistance(snap, tbl); h = tbl; break;
-        default: hOptimisticDistance(snap, tbl); h = tbl; break;
+      case HeurKind::kManhattan:
+        hManhattanAnyGoal(snap, tbl);
+        h = tbl;
+        break;
+      case HeurKind::kTrueDistance:
+        hTrueDistance(snap, tbl);
+        h = tbl;
+        break;
+      default:
+        hOptimisticDistance(snap, tbl);
+        h = tbl;
+        break;
       }
     }
     AstarConfig ac;
@@ -112,11 +137,13 @@ class Solver {
   // Sense 3 faces + infer back-side open. Returns true if anything changed.
   bool sense() {
     bool changed = false;
-    struct Q { bool wall; Dir d; } qs[3] = {
-        {w_.wallFront(), mdir_},
-        {w_.wallRight(), static_cast<Dir>((mdir_ + 1) % kDirCount)},
-        {w_.wallLeft(), static_cast<Dir>((mdir_ + 3) % kDirCount)}};
-    for (auto& q : qs) {
+    struct Q {
+      bool wall;
+      Dir d;
+    } qs[3] = {{w_.wallFront(), mdir_},
+               {w_.wallRight(), static_cast<Dir>((mdir_ + 1) % kDirCount)},
+               {w_.wallLeft(), static_cast<Dir>((mdir_ + 3) % kDirCount)}};
+    for (auto &q : qs) {
       WallStatus s = q.wall ? kWall : kOpen;
       if (known_.status(mx_, my_, q.d) != s) {
         known_.setStatus(mx_, my_, q.d, s);
@@ -137,13 +164,15 @@ class Solver {
   // requires the exit face of path[j] to be known-open. On unknown exit we
   // stop (arrive-sense-replan continues in the caller). A wall exit means the
   // plan is stale; stopping is still safe (no crash).
-  int maxRun(const std::vector<State>& path, size_t pi) const {
+  int maxRun(const std::vector<State> &path, size_t pi) const {
     int run = 0;
     size_t j = pi;
     while (j + 1 < path.size()) {
-      if (path[j].dir != path[j + 1].dir) break;  // turn at path[j]
+      if (path[j].dir != path[j + 1].dir)
+        break; // turn at path[j]
       WallStatus st = known_.status(path[j].x, path[j].y, path[j].dir);
-      if (st != kOpen) break;  // unknown or wall: cannot cross blindly
+      if (st != kOpen)
+        break; // unknown or wall: cannot cross blindly
       ++j;
     }
     return static_cast<int>(j - pi);
@@ -166,21 +195,24 @@ class Solver {
   // (F) Open-loop executor for the sealed maze: drive `states` from the
   // current pose in one pass -- batching consecutive straight cells into single
   // moveForward(N) calls, turning in place for dir changes, no sensing and no
-  // replanning. All faces along a certified path are known-open by construction,
-  // so a crash reply cannot happen (kStuck on it anyway, defensively).
+  // replanning. All faces along a certified path are known-open by
+  // construction, so a crash reply cannot happen (kStuck on it anyway,
+  // defensively).
   template <class GoalFn>
-  RunStatus driveOpen(const std::vector<State>& plan, GoalFn atGoal) {
+  RunStatus driveOpen(const std::vector<State> &plan, GoalFn atGoal) {
     size_t pi = SIZE_MAX;
     for (size_t j = 0; j < plan.size(); ++j)
       if (plan[j].x == mx_ && plan[j].y == my_ && plan[j].dir == mdir_) {
         pi = j;
         break;
       }
-    if (pi == SIZE_MAX) return RunStatus::kStuck;  // pose not on plan: replan
-    if (atGoal(mx_, my_)) return RunStatus::kDone;
+    if (pi == SIZE_MAX)
+      return RunStatus::kStuck; // pose not on plan: replan
+    if (atGoal(mx_, my_))
+      return RunStatus::kDone;
     while (pi + 1 < plan.size()) {
-      const State& a = plan[pi];
-      const State& b = plan[pi + 1];
+      const State &a = plan[pi];
+      const State &b = plan[pi + 1];
       if (a.dir == b.dir) {
         // straight batch across plans[j..j+n]
         int run = 1;
@@ -188,7 +220,8 @@ class Solver {
                plan[pi + run].dir == plan[pi + run + 1].dir) {
           ++run;
         }
-        if (!w_.moveForward(run)) return RunStatus::kStuck;
+        if (!w_.moveForward(run))
+          return RunStatus::kStuck;
         advanceStats(run);
         mx_ += static_cast<int>(kDx[mdir_]) * run;
         my_ += static_cast<int>(kDy[mdir_]) * run;
@@ -196,8 +229,9 @@ class Solver {
         onCellVisit();
       } else {
         // turn in place until facing b.dir (up to 2 x 90 deg for a U-turn)
-        int rel = (static_cast<int>(b.dir) - static_cast<int>(a.dir) + kDirCount) %
-                  kDirCount;
+        int rel =
+            (static_cast<int>(b.dir) - static_cast<int>(a.dir) + kDirCount) %
+            kDirCount;
         while (mdir_ != b.dir) {
           if (rel == 1 || rel == 2) {
             w_.turnRight();
@@ -207,11 +241,13 @@ class Solver {
             mdir_ = static_cast<Dir>((mdir_ + 3) % kDirCount);
           }
           ++st_.totalTurns;
-          if (runAtStart_) ++curRunTurns_;
+          if (runAtStart_)
+            ++curRunTurns_;
         }
         ++pi;
       }
-      if (atGoal(mx_, my_)) return RunStatus::kDone;
+      if (atGoal(mx_, my_))
+        return RunStatus::kDone;
     }
     return atGoal(mx_, my_) ? RunStatus::kDone : RunStatus::kStuck;
   }
@@ -219,39 +255,46 @@ class Solver {
   // Follow a goal-directed plan from current pose with sense+replan.
   // kStuck = planning failed mid-trip (partner may succeed from new pose).
   template <class GoalFn>
-  RunStatus runTo(GoalFn atGoal, const PhaseHeur& ph, const Cost* hOverride = nullptr) {
+  RunStatus runTo(GoalFn atGoal, const PhaseHeur &ph,
+                  const Cost *hOverride = nullptr) {
     // (F) sealed maze: no sensing/replanning during the endgame runs -- drive
     // open-loop on a *pessimistic* snapshot (unknown faces treated as walls),
     // so every crossed face is provably known-open and a crash is impossible.
     if (sealed_) {
       Maze pes = pessimisticSnapshot();
       PathResult fin = plan(mx_, my_, mdir_, atGoal, pes, ph, hOverride);
-      if (!fin.found) return RunStatus::kStuck;
+      if (!fin.found)
+        return RunStatus::kStuck;
       return driveOpen(fin.states, atGoal);
     }
-    const int kMaxSteps = 100000;  // safety breaker
+    const int kMaxSteps = 100000; // safety breaker
     int steps = 0;
-    PathResult cur = plan(mx_, my_, mdir_, atGoal, known_.snapshot(), ph, hOverride);
-    if (!cur.found) return RunStatus::kStuck;
+    PathResult cur =
+        plan(mx_, my_, mdir_, atGoal, known_.snapshot(), ph, hOverride);
+    if (!cur.found)
+      return RunStatus::kStuck;
     while (steps++ < kMaxSteps) {
-      bool changed = sense();  // sense at every cell visit (3 faces + back)
+      bool changed = sense(); // sense at every cell visit (3 faces + back)
       vizVisit();
       if (getenv("MM_TRACE2"))
-        fprintf(stderr, "RUNTO pos=(%d,%d,%d) chg=%d faces=%d%d%d%d\n", mx_, my_,
-                (int)mdir_, changed, (int)known_.status(mx_, my_, D_N),
-                (int)known_.status(mx_, my_, D_E), (int)known_.status(mx_, my_, D_S),
+        fprintf(stderr, "RUNTO pos=(%d,%d,%d) chg=%d faces=%d%d%d%d\n", mx_,
+                my_, (int)mdir_, changed, (int)known_.status(mx_, my_, D_N),
+                (int)known_.status(mx_, my_, D_E),
+                (int)known_.status(mx_, my_, D_S),
                 (int)known_.status(mx_, my_, D_W));
       if (atGoal(mx_, my_)) {
-        if (!changed) return RunStatus::kDone;
+        if (!changed)
+          return RunStatus::kDone;
         // arrived + fresh walls: replan once, then confirm
         ++st_.replans;
         cur = plan(mx_, my_, mdir_, atGoal, known_.snapshot(), ph, hOverride);
-        if (!cur.found || cur.states.size() <= 1) return RunStatus::kDone;
+        if (!cur.found || cur.states.size() <= 1)
+          return RunStatus::kDone;
         continue;
       }
       if (changed) {
         ++st_.replans;
-        Maze snap = known_.snapshot();  // keep for debugging
+        Maze snap = known_.snapshot(); // keep for debugging
         cur = plan(mx_, my_, mdir_, atGoal, snap, ph, hOverride);
         if (!cur.found) {
           if (getenv("MM_DEBUG")) {
@@ -267,10 +310,10 @@ class Solver {
             PathResult rz = ax.search(snap, mx_, my_, mdir_, zc, zero, atGoal);
             fprintf(stderr,
                     "STUCK at (%d,%d,%d) goal=%d,%d lead=%d unknown=%d\n%s",
-                    mx_, my_, (int)mdir_, truth_.goalCell(0).x, truth_.goalCell(0).y,
-                    dd[idx(mx_, my_)] == INT32_MAX, known_.unknownCount(),
-                    dumpMaze(snap).c_str());
-            FILE* f = fopen("/tmp/opencode/dumpsnap.txt", "w");
+                    mx_, my_, (int)mdir_, truth_.goalCell(0).x,
+                    truth_.goalCell(0).y, dd[idx(mx_, my_)] == INT32_MAX,
+                    known_.unknownCount(), dumpMaze(snap).c_str());
+            FILE *f = fopen("/tmp/opencode/dumpsnap.txt", "w");
             fprintf(f, "%s", dumpMaze(snap).c_str());
             fclose(f);
           }
@@ -282,8 +325,8 @@ class Solver {
         int wx, wy, wd;
         w_.debugPos(&wx, &wy, &wd);
         if (wx >= 0 && (wx != mx_ || wy != my_ || wd != (int)mdir_)) {
-          fprintf(stderr, "POSE DESYNC solver=(%d,%d,%d) world=(%d,%d,%d)\n", mx_,
-                  my_, (int)mdir_, wx, wy, wd);
+          fprintf(stderr, "POSE DESYNC solver=(%d,%d,%d) world=(%d,%d,%d)\n",
+                  mx_, my_, (int)mdir_, wx, wy, wd);
           return RunStatus::kStuck;
         }
       }
@@ -291,24 +334,32 @@ class Solver {
       size_t pi = SIZE_MAX;
       for (size_t j = 0; j < cur.states.size(); ++j)
         if (cur.states[j].x == mx_ && cur.states[j].y == my_ &&
-            cur.states[j].dir == mdir_) { pi = j; break; }
-      if (pi == SIZE_MAX) {  // plan didn't include our (state,dir): replan next iter
+            cur.states[j].dir == mdir_) {
+          pi = j;
+          break;
+        }
+      if (pi ==
+          SIZE_MAX) { // plan didn't include our (state,dir): replan next iter
         ++st_.replans;
         cur = plan(mx_, my_, mdir_, atGoal, known_.snapshot(), ph, hOverride);
-        if (!cur.found || cur.states.empty()) return RunStatus::kStuck;
+        if (!cur.found || cur.states.empty())
+          return RunStatus::kStuck;
         continue;
       }
       int run = 0;
       if (pi + 1 < cur.states.size()) {
-        const State& a = cur.states[pi];
-        const State& b = cur.states[pi + 1];
-        if (a.dir == b.dir) run = maxRun(cur.states, pi);
+        const State &a = cur.states[pi];
+        const State &b = cur.states[pi + 1];
+        if (a.dir == b.dir)
+          run = maxRun(cur.states, pi);
       }
       if (run > 0) {
         if (getenv("MM_TRACE"))
-          fprintf(stderr, "MOVE run=%d from=(%d,%d) dir=%d to=(%d,%d)\n", run, mx_,
-                  my_, (int)mdir_, mx_ + kDx[mdir_] * run, my_ + kDy[mdir_] * run);
-        if (!w_.moveForward(run)) return RunStatus::kStuck;  // crash / sim end
+          fprintf(stderr, "MOVE run=%d from=(%d,%d) dir=%d to=(%d,%d)\n", run,
+                  mx_, my_, (int)mdir_, mx_ + kDx[mdir_] * run,
+                  my_ + kDy[mdir_] * run);
+        if (!w_.moveForward(run))
+          return RunStatus::kStuck; // crash / sim end
         advanceStats(run);
         mx_ += kDx[mdir_] * run;
         my_ += kDy[mdir_] * run;
@@ -320,7 +371,9 @@ class Solver {
         }
         Dir nd = cur.states[pi + 1].dir;
         while (mdir_ != nd) {
-          int rel = (static_cast<int>(nd) - static_cast<int>(mdir_) + kDirCount) % kDirCount;
+          int rel =
+              (static_cast<int>(nd) - static_cast<int>(mdir_) + kDirCount) %
+              kDirCount;
           if (rel == 3) {
             w_.turnLeft();
             mdir_ = static_cast<Dir>((mdir_ + 3) % kDirCount);
@@ -329,7 +382,8 @@ class Solver {
             mdir_ = static_cast<Dir>((mdir_ + 1) % kDirCount);
           }
           ++st_.totalTurns;
-if (runAtStart_) ++curRunTurns_;
+          if (runAtStart_)
+            ++curRunTurns_;
         }
       }
       // run-boundary bookkeeping (start / goal visits)
@@ -368,10 +422,11 @@ if (runAtStart_) ++curRunTurns_;
            (my_ == MAZE_H / 2 || my_ == MAZE_H / 2 - 1);
   }
 
-  // ---------- visualization (worlds that ignore setColor/setText: no-op) ----------
-  // Colors: r=goal, g=explored, o=frontier trip target, b=certified best path.
-  // Text: number in each visited cell = optimistic steps-to-center at visit
-  // time; refreshed with the final true distance once the path is certified.
+  // ---------- visualization (worlds that ignore setColor/setText: no-op)
+  // ---------- Colors: r=goal, g=explored, o=frontier trip target, b=certified
+  // best path. Text: number in each visited cell = optimistic steps-to-center
+  // at visit time; refreshed with the final true distance once the path is
+  // certified.
   bool cellVis_[MAZE_W * MAZE_H] = {};
 
   void vizInit() {
@@ -390,7 +445,7 @@ if (runAtStart_) ++curRunTurns_;
   }
 
   // distance-to-center table on the current known map (unknown=optimistic)
-  void vizDistanceTable(const Maze& snap, Cost out[kMAZE]) {
+  void vizDistanceTable(const Maze &snap, Cost out[kMAZE]) {
     int src[4], n = 0;
     for (int i = 0; i < 4 && i < snap.goalCount(); ++i) {
       Cell g = snap.goalCell(i);
@@ -401,7 +456,8 @@ if (runAtStart_) ++curRunTurns_;
 
   void vizVisit() {
     int c = idx(mx_, my_);
-    if (cellVis_[c]) return;
+    if (cellVis_[c])
+      return;
     cellVis_[c] = true;
     w_.setColor(mx_, my_, 'g');
     Maze snap = known_.snapshot();
@@ -416,7 +472,7 @@ if (runAtStart_) ++curRunTurns_;
 
   void vizTripTarget(int tx, int ty) { w_.setColor(tx, ty, 'o'); }
 
-  void vizFinal(const PathResult& best) {
+  void vizFinal(const PathResult &best) {
     Maze snap = known_.snapshot();
     w_.clearAllColor();
     vizGoals();
@@ -426,61 +482,73 @@ if (runAtStart_) ++curRunTurns_;
     for (int y = 0; y < MAZE_H; ++y)
       for (int x = 0; x < MAZE_W; ++x) {
         int c = idx(x, y);
-        if (!cellVis_[c] || dc[c] == INT32_MAX) continue;
+        if (!cellVis_[c] || dc[c] == INT32_MAX)
+          continue;
         char b[8];
         std::snprintf(b, sizeof b, "%d", dc[c] / kCostUnit);
         w_.setText(x, y, b);
       }
     // certified best path in faint blue (cyan)
-    for (auto s : best.states) w_.setColor(s.x, s.y, 'c');
+    for (auto s : best.states)
+      w_.setColor(s.x, s.y, 'c');
   }
 
   // ---------- phases ----------
   bool phase1() {
     st_.phase = 1;
     auto atGoal = [&](int x, int y) { return isGoalTruth(x, y); };
-    if (runTo(atGoal, cfg_.phase1) == RunStatus::kStuck) return false;
+    if (runTo(atGoal, cfg_.phase1) == RunStatus::kStuck)
+      return false;
     return true;
   }
 
   struct FrontierEdge {
-    int ax, ay;         // from-cell
-    Dir d;              // direction of unknown edge a->b
-    Cost bound;         // ds[a] + 1 + dc[b] (potential best path through it)
-    int tx, ty;         // cell to travel to for sensing this edge: a
+    int ax, ay; // from-cell
+    Dir d;      // direction of unknown edge a->b
+    Cost bound; // ds[a] + 1 + dc[b] (potential best path through it)
+    int tx, ty; // cell to travel to for sensing this edge: a
   };
 
   // compute the improvement band frontier; false => certified (band empty)
-  bool improvementFrontier(std::vector<FrontierEdge>& out, double C_P,
+  bool improvementFrontier(std::vector<FrontierEdge> &out, double C_P,
                            Cost ds[kMAZE], Cost dc[kMAZE]) {
     out.clear();
     Maze snap = known_.snapshot();
     int srcS[1] = {idx(0, 0)};
     int srcC[4];
-    for (int i = 0; i < 4; ++i) { Cell g = snap.goalCell(i); srcC[i] = idx(g.x, g.y); }
+    for (int i = 0; i < 4; ++i) {
+      Cell g = snap.goalCell(i);
+      srcC[i] = idx(g.x, g.y);
+    }
     dijkstraCells(snap, srcS, 1, ds);
     dijkstraCells(snap, srcC, 4, dc);
     const Cost LIM = static_cast<Cost>(C_P);
     for (int y = 0; y < MAZE_H; ++y)
       for (int x = 0; x < MAZE_W; ++x) {
-        for (int di = 1; di < kDirCount; ++di) {  // E,S only: dedupe symmetric
+        for (int di = 1; di < kDirCount; ++di) { // E,S only: dedupe symmetric
           Dir d = static_cast<Dir>(di);
-          if (known_.status(x, y, d) != kUnknown) continue;
+          if (known_.status(x, y, d) != kUnknown)
+            continue;
           int nx = x + kDx[d], ny = y + kDy[d];
-          if (nx < 0 || ny < 0 || nx >= MAZE_W || ny >= MAZE_H) continue;
+          if (nx < 0 || ny < 0 || nx >= MAZE_W || ny >= MAZE_H)
+            continue;
           // check both traversal orders for an improving shortcut
           Cost b1 = ds[idx(x, y)];
           Cost b2 = dc[idx(nx, ny)];
           Cost b3 = ds[idx(nx, ny)];
           Cost b4 = dc[idx(x, y)];
-          if (b1 == INT32_MAX || b2 == INT32_MAX || b3 == INT32_MAX || b4 == INT32_MAX)
-            continue;  // side disconnected even optimistically (irrelevant)
+          if (b1 == INT32_MAX || b2 == INT32_MAX || b3 == INT32_MAX ||
+              b4 == INT32_MAX)
+            continue; // side disconnected even optimistically (irrelevant)
           if (b1 + kCostUnit + b2 <= LIM || b3 + kCostUnit + b4 <= LIM) {
             FrontierEdge e;
-            e.ax = x; e.ay = y; e.d = d;
+            e.ax = x;
+            e.ay = y;
+            e.d = d;
             e.bound = std::min(b1 + kCostUnit + b2, b3 + kCostUnit + b4);
             // travel to whichever side is more informative; use a (from-cell)
-            e.tx = x; e.ty = y;
+            e.tx = x;
+            e.ty = y;
             out.push_back(e);
           }
         }
@@ -496,12 +564,14 @@ if (runAtStart_) ++curRunTurns_;
     while (guard++ < 400) {
       ++iter_;
       if (getenv("MM_DEBUG"))
-        fprintf(stderr, "P2-top iter=%d pos=(%d,%d,%d)\n", iter_, mx_, my_, (int)mdir_);
+        fprintf(stderr, "P2-top iter=%d pos=(%d,%d,%d)\n", iter_, mx_, my_,
+                (int)mdir_);
       // 1: best known path center<->start (A* from start pose? mouse may be
       // anywhere; evaluate the *run* start->center independent of pose)
       Maze snap = known_.snapshot();
-      PathResult best = plan(0, 0, D_N, [&](int x, int y) { return isGoalTruth(x, y); },
-                             snap, PhaseHeur{HeurKind::kTrueDistance, 1, 1});
+      PathResult best = plan(
+          0, 0, D_N, [&](int x, int y) { return isGoalTruth(x, y); }, snap,
+          PhaseHeur{HeurKind::kTrueDistance, 1, 1});
       if (!best.found && known_.unknownCount() == 0) {
         // maze dead-ends? keep exploring (trip toward frontier) or fail:
         // if no unknown and no path, maze can't be solved: report failure
@@ -514,21 +584,23 @@ if (runAtStart_) ++curRunTurns_;
         std::vector<FrontierEdge> frontier;
         bool exist = improvementFrontier(frontier, best.cost, ds, dc);
         if (getenv("MM_DEBUG")) {
-          fprintf(stderr,
-                  "P2 iter=%d pos=(%d,%d,%d) CP=%.2f frontier=%zu unknownEdges=%d "
-                  "opt=%.2f\n",
-                  iter_, mx_, my_, (int)mdir_, best.cost / (double)kCostUnit,
-                  frontier.size(), known_.unknownCount(), st_.certOptimistic);
+          fprintf(
+              stderr,
+              "P2 iter=%d pos=(%d,%d,%d) CP=%.2f frontier=%zu unknownEdges=%d "
+              "opt=%.2f\n",
+              iter_, mx_, my_, (int)mdir_, best.cost / (double)kCostUnit,
+              frontier.size(), known_.unknownCount(), st_.certOptimistic);
         }
         st_.certOptimistic =
-            (dc[idx(0, 0)] < INT32_MAX ? dc[idx(0, 0)] / (double)kCostUnit : -1);
+            (dc[idx(0, 0)] < INT32_MAX ? dc[idx(0, 0)] / (double)kCostUnit
+                                       : -1);
         if (!exist) {
           // CERTIFIED
           st_.certifiedAfterCells = static_cast<int>(st_.totalDistance);
           st_.certBound = st_.certBestKnown;
           certified_ = best;
           vizFinal(best);
-          sealed_ = true;  // (F): endgame drives open-loop, no sense/replan
+          sealed_ = true; // (F): endgame drives open-loop, no sense/replan
           return true;
         }
         // 3: score frontier edges (A): one flood from the mouse gives the exact
@@ -538,18 +610,22 @@ if (runAtStart_) ++curRunTurns_;
         Cost dm[kMAZE];
         int msrc[1] = {idx(mx_, my_)};
         dijkstraCells(snap, msrc, 1, dm);
-        double vband_ = 1.0;  // cells; (B) tie window, tunable via MM_VBAND
-        if (const char* v = getenv("MM_VBAND")) vband_ = atof(v);
+        double vband_ = 1.0; // cells; (B) tie window, tunable via MM_VBAND
+        if (const char *v = getenv("MM_VBAND"))
+          vband_ = atof(v);
         const double VBAND = vband_;
-        const FrontierEdge* bestEdge = nullptr;
+        const FrontierEdge *bestEdge = nullptr;
         double bestVal = -1e18;
-        for (const auto& e : frontier) {
-          if (skipTarget_[idx(e.tx, e.ty)]) continue;
-          if (dm[idx(e.tx, e.ty)] == INT32_MAX) continue;  // sealed-off target
+        for (const auto &e : frontier) {
+          if (skipTarget_[idx(e.tx, e.ty)])
+            continue;
+          if (dm[idx(e.tx, e.ty)] == INT32_MAX)
+            continue; // sealed-off target
           double trip = dm[idx(e.tx, e.ty)] / (double)kCostUnit;
           double saving = (best.cost - e.bound) / (double)kCostUnit;
           double val = saving - trip;
-          if (val > bestVal) bestVal = val;
+          if (val > bestVal)
+            bestVal = val;
         }
         if (bestVal <= -1e17) {
           // nowhere reachable with unknowns in-band: cannot improve: certify
@@ -565,22 +641,29 @@ if (runAtStart_) ++curRunTurns_;
         int bestTrip = INT32_MAX;
         Cost bestBound = INT32_MAX;
         int bestShared = -1;
-        for (const auto& e : frontier) {
-          if (skipTarget_[idx(e.tx, e.ty)]) continue;
-          if (dm[idx(e.tx, e.ty)] == INT32_MAX) continue;
+        for (const auto &e : frontier) {
+          if (skipTarget_[idx(e.tx, e.ty)])
+            continue;
+          if (dm[idx(e.tx, e.ty)] == INT32_MAX)
+            continue;
           double trip = dm[idx(e.tx, e.ty)] / (double)kCostUnit;
           double saving = (best.cost - e.bound) / (double)kCostUnit;
           double val = saving - trip;
-          if (val < bestVal - VBAND) continue;
+          if (val < bestVal - VBAND)
+            continue;
           // how many other in-band edges share this target cell?
           int shared = 0;
-          for (const auto& o : frontier)
-            if (o.tx == e.tx && o.ty == e.ty) ++shared;
+          for (const auto &o : frontier)
+            if (o.tx == e.tx && o.ty == e.ty)
+              ++shared;
           bool better = false;
-          if (trip < bestTrip) better = true;
+          if (trip < bestTrip)
+            better = true;
           else if (trip == bestTrip) {
-            if (e.bound < bestBound) better = true;
-            else if (e.bound == bestBound && shared > bestShared) better = true;
+            if (e.bound < bestBound)
+              better = true;
+            else if (e.bound == bestBound && shared > bestShared)
+              better = true;
           }
           if (better) {
             bestEdge = &e;
@@ -615,7 +698,8 @@ if (runAtStart_) ++curRunTurns_;
           std::vector<Cost> tripH(kMAZE);
           int tsrc[1] = {idx(tx, ty)};
           dijkstraCells(Maze(), tsrc, 1, tripH.data());
-          dbgTx_ = tx; dbgTy_ = ty;
+          dbgTx_ = tx;
+          dbgTy_ = ty;
           auto atT = [&](int x, int y) { return x == tx && y == ty; };
           if (runTo(atT, tripHeur, tripH.data()) == RunStatus::kStuck) {
             // sealed en route: give up on this target this maze (its unknown
@@ -625,7 +709,8 @@ if (runAtStart_) ++curRunTurns_;
             continue;
           }
           // unknown edge may have been sensed en route; if not, orient & sense
-          if (known_.status(bestEdge->tx, bestEdge->ty, bestEdge->d) == kUnknown)
+          if (known_.status(bestEdge->tx, bestEdge->ty, bestEdge->d) ==
+              kUnknown)
             faceForUnknown(bestEdge->d);
         }
         continue;
@@ -640,18 +725,21 @@ if (runAtStart_) ++curRunTurns_;
         for (int di = 0; di < kDirCount; ++di) {
           Dir d = static_cast<Dir>(di);
           // own face unknown => sensing here will reveal it => real progress
-          if (known_.status(x, y, d) == kUnknown) return true;
+          if (known_.status(x, y, d) == kUnknown)
+            return true;
         }
         return false;
       };
-      if (runTo(atUnknownNeighbor, fallback) == RunStatus::kStuck) return false;
+      if (runTo(atUnknownNeighbor, fallback) == RunStatus::kStuck)
+        return false;
     }
-    return false;  // loop guard tripped
+    return false; // loop guard tripped
   }
 
   void faceDir(Dir d) {
     while (mdir_ != d) {
-      int rel = (static_cast<int>(d) - static_cast<int>(mdir_) + kDirCount) % kDirCount;
+      int rel = (static_cast<int>(d) - static_cast<int>(mdir_) + kDirCount) %
+                kDirCount;
       if (rel == 1 || rel == 2) {
         w_.turnRight();
         mdir_ = static_cast<Dir>((mdir_ + 1) % kDirCount);
@@ -660,18 +748,22 @@ if (runAtStart_) ++curRunTurns_;
         mdir_ = static_cast<Dir>((mdir_ + 3) % kDirCount);
       }
       ++st_.totalTurns;
-if (runAtStart_) ++curRunTurns_;
-      if (!sealed_) sense();
+      if (runAtStart_)
+        ++curRunTurns_;
+      if (!sealed_)
+        sense();
     }
   }
   // Rotate in place (up to 4 x 90°) until face d is in front, sensing sides.
   void faceForUnknown(Dir d) {
     for (int k = 0; k < 4; ++k) {
-      if (known_.status(mx_, my_, d) != kUnknown) return;
+      if (known_.status(mx_, my_, d) != kUnknown)
+        return;
       w_.turnRight();
       mdir_ = static_cast<Dir>((mdir_ + 1) % kDirCount);
       ++st_.totalTurns;
-if (runAtStart_) ++curRunTurns_;
+      if (runAtStart_)
+        ++curRunTurns_;
       sense();
     }
   }
@@ -684,7 +776,8 @@ if (runAtStart_) ++curRunTurns_;
     ph.epsNum = 1;
     ph.epsDen = 1;
     auto atStart = [&](int x, int y) { return x == 0 && y == 0; };
-    if (mx_ == 0 && my_ == 0) return true;
+    if (mx_ == 0 && my_ == 0)
+      return true;
     return runTo(atStart, ph) == RunStatus::kDone;
   }
 
@@ -699,9 +792,11 @@ if (runAtStart_) ++curRunTurns_;
     // face the first direction of the sprint plan
     Maze snap = known_.snapshot();
     PathResult p = plan(mx_, my_, mdir_, atGoal, snap, ph);
-    if (!p.found || p.states.size() < 2) return false;
+    if (!p.found || p.states.size() < 2)
+      return false;
     faceDir(p.states[1].dir);
-    if (runTo(atGoal, ph) != RunStatus::kDone) return false;
+    if (runTo(atGoal, ph) != RunStatus::kDone)
+      return false;
     st_.sprintDist = static_cast<int>(curRunDist_);
     st_.sprintTurns = curRunTurns_;
     return isGoalHere();
@@ -709,12 +804,12 @@ if (runAtStart_) ++curRunTurns_;
 
   bool isGoalTruth(int x, int y) const { return truth_.isGoal(x, y); }
   int dbgTx_ = -1, dbgTy_ = -1;
-  bool skipTarget_[MAZE_W * MAZE_H] = {};  // trip targets proven unreachable
-  bool allowLazy_ = false;                 // mirrors cfg_.allowLazy
-  bool sealed_ = false;  // (F) true after certification: endgame is open-loop
+  bool skipTarget_[MAZE_W * MAZE_H] = {}; // trip targets proven unreachable
+  bool allowLazy_ = false;                // mirrors cfg_.allowLazy
+  bool sealed_ = false; // (F) true after certification: endgame is open-loop
 
-  IWorld& w_;
-  const Maze& truth_;
+  IWorld &w_;
+  const Maze &truth_;
   SolverConfig cfg_;
   Astar astar_;
   KnownMaze known_;
@@ -728,4 +823,4 @@ if (runAtStart_) ++curRunTurns_;
   int curRunTurns_ = 0;
 };
 
-}  // namespace mm
+} // namespace mm

@@ -11,7 +11,7 @@ constexpr int GOAL_CELLS = 4;  // center 2x2
 
 // Fixed-point cost: 1 cell forward == kCostUnit.
 using Cost = int32_t;
-constexpr Cost kCostUnit = 256;
+constexpr Cost kCostUnit = 255;
 
 // Direction of travel. Position (x,y): x east, y south (row index).
 enum Dir : uint8_t { D_N = 0, D_E = 1, D_S = 2, D_W = 3 };

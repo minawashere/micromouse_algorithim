@@ -19,38 +19,7 @@
 
 int main(int argc, char** argv) {
   mm::SolverConfig cfg;
-  for (int i = 1; i < argc; ++i) {
-    auto next = [&]() { return std::string(argv[++i]); };
-    if (!strcmp(argv[i], "--turncost")) {
-      cfg.turnCost = atoi(next().c_str());
-    } else if (!strcmp(argv[i], "--allow-lazy")) {
-      cfg.allowLazy = true;
-    } else if (!strcmp(argv[i], "--p1eps")) {
-      cfg.phase1.epsNum = atoi(next().c_str());
-    } else if (!strcmp(argv[i], "--p2eps")) {
-      cfg.phase2.epsNum = atoi(next().c_str());
-    } else if (!strcmp(argv[i], "--p1heur")) {
-      std::string v = next();
-      cfg.phase1.kind = v == "manhattan" ? mm::HeurKind::kManhattan
-                       : v == "true"     ? mm::HeurKind::kTrueDistance
-                                         : mm::HeurKind::kOptimistic;
-    } else if (!strcmp(argv[i], "--p2heur")) {
-      std::string v = next();
-      cfg.phase2.kind = v == "manhattan" ? mm::HeurKind::kManhattan
-                       : v == "true"     ? mm::HeurKind::kTrueDistance
-                                         : mm::HeurKind::kOptimistic;
-    } else {
-      std::fprintf(stderr, "mm_algo: unknown argument '%s'\n", argv[i]);
-      return 2;
-    }
-  }
-  std::fprintf(stderr,
-               "mm_algo cfg: turncost=%d eps1=%d eps2=%d lazy=%d "
-               "p1heur=%d p2heur=%d\n",
-               static_cast<int>(cfg.turnCost), cfg.phase1.epsNum,
-               cfg.phase2.epsNum, cfg.allowLazy ? 1 : 0,
-               static_cast<int>(cfg.phase1.kind),
-               static_cast<int>(cfg.phase2.kind));
+  cfg.phase2.epsNum = 3;
   mm::MmsWorld world;
   if (!world.init()) return 1;
   mm::Maze assumedGoals;  // default: center 2x2
