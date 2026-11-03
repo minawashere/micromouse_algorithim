@@ -21,6 +21,7 @@ target_compile_options(run PRIVATE -Wall -Wextra)
 # binary to point the mms simulator GUI at
 add_executable(mms src/apps/mms_main.cpp)
 target_link_libraries(mms PRIVATE mm_core)
+target_compile_options(mms PRIVATE -Wall -Wextra)
 
 # quick unit smoke test
 add_executable(test_core tests/test_core.cpp)

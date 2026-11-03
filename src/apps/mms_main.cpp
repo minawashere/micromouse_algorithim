@@ -57,13 +57,9 @@ int main(int argc, char** argv)
     mm::SolverConfig cfg;
     mm::MmsWorld world;
 
-    std::string mazePath;
-    bool json = false, check = false, verbose = false;
     for (int i = 1; i < argc; ++i) {
         auto next = [&]() { return std::string(argv[++i]); };
-        if (!strcmp(argv[i], "--json")) json = true;
-        else if (!strcmp(argv[i], "--check")) check = true;
-        else if (!strcmp(argv[i], "--p1eps")) { cfg.phase1.epsNum = atoi(next().c_str()); }
+        if (!strcmp(argv[i], "--p1eps")) { cfg.phase1.epsNum = atoi(next().c_str()); }
         else if (!strcmp(argv[i], "--p2eps")) { cfg.phase2.epsNum = atoi(next().c_str()); }
         else if (!strcmp(argv[i], "--vband")) { cfg.vband = atof(next().c_str()); }
         else if (!strcmp(argv[i], "--p1heur")) {

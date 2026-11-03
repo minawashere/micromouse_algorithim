@@ -71,7 +71,7 @@
   // Same but over the *optimistic* map: all unknown walls treated open — indoor
   // pass a maze holding only known walls? here we open everything (Maze() =
   // the fully open field). The `known` arg is unused (kept for API symmetry).
-  inline void hOptimisticDistance(const Maze& known, Cost out[MAZE_W * MAZE_H]) {
+  inline void hOptimisticDistance(const Maze& /*known*/, Cost out[MAZE_W * MAZE_H]) {
     memcpy(out, optimisticCache(), sizeof(Cost) * MAZE_W * MAZE_H);
     // NOTE: doesn't depend on `known`; kept for API symmetry / future refinement
     // (per-direction lookup tables can use known walls of the reverse trip).

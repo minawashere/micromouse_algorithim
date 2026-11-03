@@ -56,11 +56,23 @@ class MmsWorld : public IWorld {
  private:
   template <class... A>
   void send(const char* fmt, A... a) {
-    std::printf(fmt, a...);
+    if constexpr (sizeof...(A) == 0) {
+      // zero-arg sends pass whole literal lines ("mazeWidth") -- print via
+      // %s so the format is always a string literal (-Wformat-security)
+      std::printf("%s", fmt);
+    } else {
+      std::printf(fmt, a...);
+    }
     std::printf("\n");
     std::fflush(stdout);
     if (getenv("MM_PROTO")) fprintf(stderr, "SENT: ");
-    if (getenv("MM_PROTO")) { fprintf(stderr, fmt, a...); fprintf(stderr, "\n"); }
+    if (getenv("MM_PROTO")) {
+      if constexpr (sizeof...(A) == 0)
+        fprintf(stderr, "%s", fmt);
+      else
+        fprintf(stderr, fmt, a...);
+      fprintf(stderr, "\n");
+    }
   }
   std::string readLine() {
     std::string s;

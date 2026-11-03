@@ -13,7 +13,7 @@
 
 namespace mm {
 
-static bool isWallChar(char c) { return c == '-' || c == '|' || c == '+'; }
+// (dead code removed: isWallChar was unused)
 
 bool loadClassic(const std::vector<std::string>& lines, Maze& m, std::string* err) {
   if (lines.empty()) { if (err) *err = "empty file"; return false; }

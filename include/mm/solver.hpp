@@ -476,7 +476,8 @@ namespace mm
         // plan is stale; stopping is still safe (no crash).
         int maxRun(const std::vector<State>& path, size_t pi) const
         {
-            int run = 0;
+            // the batch length is exactly the count of consecutive
+            // known-open straight steps leaving pi (j advances per step)
             size_t j = pi;
             while (j + 1 < path.size())
             {
@@ -903,7 +904,7 @@ namespace mm
             vizDistanceTable(snap, dc);
             if (dc[c] < INT32_MAX)
             {
-                char b[8];
+                char b[16];
                 std::snprintf(b, sizeof b, "%d", dc[c] / kCostUnit);
                 w_.setText(mx_, my_, b);
             }
@@ -936,7 +937,7 @@ namespace mm
                     int c = idx(x, y);
                     if (!cellVis_[c] || dc[c] == INT32_MAX)
                         continue;
-                    char b[8];
+                    char b[16];
                     std::snprintf(b, sizeof b, "%d", dc[c] / kCostUnit);
                     w_.setText(x, y, b);
                 }

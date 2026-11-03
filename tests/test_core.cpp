@@ -1,4 +1,11 @@
 // Minimal smoke tests: maze parsing + A* correctness on hand-built mazes.
+//
+// NOTE: assert() must stay ACTIVE even in Release (the default build type
+// defines NDEBUG, which silently compiled every assertion out, making the
+// whole suite vacuous). Undefine before the first <cassert> include.
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <cassert>
 #include <cstdio>
 #include "mm/astar.hpp"
@@ -73,20 +80,29 @@ static void testSolverSimple() {
 static void testWallSymmetry() {
   // Shared-wall propagation into UNEXPLORED cells: learning one endpoint of a
   // wall instantly writes the opposite face of the neighbor, visited or not.
+  // NOTE coordinates: y points UP (D_S = y-1), so the south face of (2,2)
+  // is the border between (2,2) and (2,1) -- its symmetric twin is the
+  // NORTH face of (2,1).
   KnownMaze km;
   km.setStatus(3, 4, D_E, kWall);
   assert(km.status(4, 4, D_W) == kWall);
   km.setStatus(2, 2, D_S, kOpen);
-  assert(km.status(2, 3, D_N) == kOpen);
+  assert(km.status(2, 1, D_N) == kOpen);
   // ...and the pathfinder must respect inferred walls of unvisited cells:
   // snapshot() copies every known WALL face (symmetric), so A* / BFS floods
   // over the snapshot can never route through a deduced wall.
   Maze snap = km.snapshot();
   assert(snap.wall(4, 4, D_W));
-  assert(!snap.wall(2, 3, D_N));
-  // border sanity: out-of-bounds is a wall and survives propagation
-  km.setStatus(0, 0, D_N, kWall);
-  assert(snap.wall(0, 0, D_N));
+  assert(!snap.wall(2, 1, D_N));
+  // border sanity: a BORDER face (south of (0,0): neighbor (0,-1) is out of
+  // bounds) is a wall -- and must survive re-snapshotting (snap is stale the
+  // moment km changes, so re-take it)
+  km.setStatus(0, 0, D_S, kWall);
+  snap = km.snapshot();
+  assert(snap.wall(0, 0, D_S));
+  assert(km.status(0, 0, D_S) == kWall);
+  // out-of-bounds reads are ALWAYS walls by the KnownMaze contract
+  assert(km.status(0, -1, D_N) == kWall);
   printf("wall symmetry: OK\n");
 }
 
