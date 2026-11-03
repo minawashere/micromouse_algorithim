@@ -115,6 +115,19 @@ class Astar {
       if (!maze.wall(x, y, dir)) {
         int nx = x + kDx[dir], ny = y + kDy[dir];
         if (nx < 0 || ny < 0 || nx >= MAZE_W || ny >= MAZE_H) continue;  // border
+        // GOAL CELLS ARE ABSORBING -- faithful port of the kinematic-flood
+        // arc ban: a search NEVER steps goal -> goal ("if current cell weight
+        // == 0, don't go to any cell with weight 0, instead go to weights >
+        // 0"). Entering a goal cell from a weight>0 cell stays legal (a
+        // one-touch dip: the next forward step must leave for weight>0, so
+        // the zero region can never be traversed or lapped). Banning entries
+        // outright (isGoal(dest) && !atGoal(dest)) is WRONG here: searches
+        // targeting non-goal cells (returns, DeepExplore trips) may NEED to
+        // touch the center en route -- the full ban made those searches
+        // unfound and failed 399-468 benchmark mazes. Turn-in-place
+        // successors are unaffected (no motion), so a leg standing inside
+        // the center always has a representable exit.
+        if (maze.isGoal(x, y) && maze.isGoal(nx, ny)) continue;
         int ns = stateIdx(nx, ny, dir);
         if (S.closed[ns] != S.gen) {
           int32_t ng = S.g[s] + kCostUnit;
