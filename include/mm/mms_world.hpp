@@ -18,9 +18,10 @@ class MmsWorld : public IWorld {
   bool wallFront() override { return boolValue("wallFront"); }
   bool wallRight() override { return boolValue("wallRight"); }
   bool wallLeft() override { return boolValue("wallLeft"); }
-  // The mms protocol exposes the 3-face rig only (this cell): no calibrated
-  // 2-cell look-ahead exists here, so the solver must not expect it and plans
-  // strictly on measured faces. (-1 = rig not calibrated, never fabricate.)
+  // The mms protocol exposes the 3-face rig only (this cell): no 2-cell
+  // look-ahead exists in this rig, and cfg.lookAhead (--look-ahead) stays
+  // off for simulators -- the solver never asks and plans strictly on
+  // measured faces. (Return -1 "not calibrated" if it ever asked anyway.)
   int wallAhead2() override { return -1; }
 
   bool moveForward(int cells) override {

@@ -56,6 +56,12 @@ namespace mm
         // Flood-fill walk refinements:
         bool ffStraight = false; // on pick ties, prefer continuing straight
         bool ffAvoid = false;    // leg 1: on pick ties, prefer cells off the outbound path
+        // REAL-HARDWARE look-ahead rig (--look-ahead): diagonal sensors read
+        // right/left and the front rig reads one cell ahead, extending wall
+        // knowledge to the face one cell beyond the 3-face rig on straight
+        // corridors. FALSE by default: simulators (mms protocol reports the
+        // current cell only) do not have this rig -- never assume it.
+        bool lookAhead = false;
         // CURIOSITY_WEIGHT: penalty (in flood units) added to the flood cost of
         // crossing an UNEXPLORED face during the directional kinematic flood.
         // Unexplored walls are neither open nor closed: the wave only pushes
@@ -293,7 +299,7 @@ namespace mm
             // Only the remote face is extra knowledge: it is written exactly
             // once and can never contradict a later honest measurement.
             Dir fdir = mdir_;
-            if (known_.status(mx_, my_, fdir) == kOpen)
+            if (cfg_.lookAhead && known_.status(mx_, my_, fdir) == kOpen)
             {
                 int fx = mx_ + kDx[fdir], fy = my_ + kDy[fdir];
                 if (fx >= 0 && fy >= 0 && fx < MAZE_W && fy < MAZE_H &&

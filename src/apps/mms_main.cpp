@@ -19,6 +19,9 @@
 //   --ff-legs N           exploration legs (even, >= 2; odd coerced down).
 //                         Even ends the walk at the start, so the sprint
 //                         begins immediately. Default 2.
+//   --look-ahead          real-HW 2-cell IR rig (diagonal side sensors +
+//                         one-cell front read). NO such rig exists inside
+//                         the mms protocol: accepted but inert here.
 //   --trip-worth X        phase-2 trip economics ratio (default -1 = exact best
 //                         path certificate; optimal per 519-maze sweep — any
 //                         X > 0 collapses to instant certification with
@@ -76,6 +79,7 @@ int main(int argc, char** argv)
         } else if (!strcmp(argv[i], "--floodfill")){ cfg.floodFill = true; }
         else if (!strcmp(argv[i], "--ff-straight")){ cfg.ffStraight = true; }
         else if (!strcmp(argv[i], "--ff-avoid")){ cfg.ffAvoid = true; }
+        else if (!strcmp(argv[i], "--look-ahead")){ cfg.lookAhead = true; } // no rig in mms: inert
         else if (!strcmp(argv[i], "--ff-curio")){ cfg.ffCurio = atof(next().c_str()); }
         else if (!strcmp(argv[i], "--ff-legs")){ cfg.ffLegs = atoi(next().c_str()); }
         else if (!strcmp(argv[i], "--mix")){ cfg.mixMode = true; }

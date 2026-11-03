@@ -39,6 +39,7 @@ int main(int argc, char** argv) {
     } else if (!strcmp(argv[i], "--floodfill")) { cfg.floodFill = true; }
     else if (!strcmp(argv[i], "--ff-straight")) { cfg.ffStraight = true; }
     else if (!strcmp(argv[i], "--ff-avoid")) { cfg.ffAvoid = true; }
+    else if (!strcmp(argv[i], "--look-ahead")) { cfg.lookAhead = true; }
     else if (!strcmp(argv[i], "--ff-curio")) { cfg.ffCurio = atoi(next().c_str()); }
     else if (!strcmp(argv[i], "--ff-legs")) { cfg.ffLegs = atoi(next().c_str()); }
     else if (!strcmp(argv[i], "--mix")) { cfg.mixMode = true; }
