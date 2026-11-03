@@ -1,11 +1,44 @@
 # micromouse_algo
 
-C++17 micromouse maze solver: weighted-A* trip planning, directional
-kinematic flood-fill exploration, dead-end sealing, and a competitive
-5-stage mix-mode machine for a 16×16 maze with the center 2×2 as the goal.
-Runs in three places: an offline benchmark CLI (`run`), the
-[mms](https://github.com/mackorone/mms) simulator GUI (`mms`), and the unit
-smoke test (`test_core`).
+A C++17 micromouse maze solver and benchmark harness for the standard
+16×16 competitive maze (center 2×2 goal). The mouse starts in an unknown
+maze with a 3-face sensor rig (front / left / right of the current cell —
+nothing is ever read from ground truth), builds its wall map cell by cell,
+and drives for the fastest possible run: weighted-A* trip planning while
+searching, then a final sprint along the fastest route found.
+
+The same solver drives three frontends:
+
+| Frontend | What it is |
+|---|---|
+| `build/run` | Offline command-line simulator: solve a maze from the corpus, print score, run statistics, and solver internals (`--json` for machine-readable output). |
+| `build/mms` | Drop-in wrapper for the [mms](https://github.com/mackorone/mms) simulator GUI: speaks the mms stdin/stdout protocol, so the GUI's rendering & animation drive the same solver. |
+| `build/test_core` | Unit smoke tests (maze parsing, A*/dijkstra, wall symmetry, end-to-end solve). |
+
+## How the solver works
+
+1. **Explore** — sense the 3 faces of the current cell, write them
+   symmetrically into the wall map (learning one side of a wall
+   immediately knows its twin), and seal confidently-dead ends out of
+   planning.
+2. **Plan** — weighted-A* over the known map with turn cost
+   (`--turncost 64` = 0.25 cell-time per 90° turn) and ε-weighted greed
+   (`--p1eps/--p2eps 2`), replanning after every surprise.
+3. **Decide** — judge whether more exploration is worth the cells spent.
+   By default exploration runs until the known sprint cost is *provably
+   unbeatable* (exact best-path certificate; the `cert_*` JSON fields).
+4. **Sprint** — execute the best run found. Goal cells absorb: a run ends
+   at the first center cell it touches — never wandering inside the goal
+   region.
+
+Three personalities cover the spectrum: the **exact 4-phase machine**
+(default), a **flood-fill mood** (`--floodfill` — exploration descends a
+directional kinematic flood, so step costs include turn and u-turn
+penalties, with a curiosity weight on unexplored faces), and the
+competitive **5-stage mix-mode machine** (`--mix-mode`: SearchCenter →
+OptimizedReturn → Sprint1 → DeepExplore → Sprint2), which locks the map
+and sprints early, then re-opens exploration only inside an improvement
+band.
 
 ## Repository layout
 
@@ -20,21 +53,54 @@ scripts/       bench.py (corpus benchmark), mms_wrap.sh (protocol-logging wrappe
 
 ## Build
 
-Requires only a C++17 toolchain and CMake ≥ 3.16.
+### Configure
 
 ```sh
-cmake -S . -B build          # Release is the default build type
-cmake --build build -j4      # or -j$(nproc)
-./build/test_core            # must print: ALL TESTS PASSED
+cmake -S . -B build                    # Release is the default build type
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug   # or explicitly Debug
 ```
 
-Produces `build/run`, `build/mms`, and `build/test_core`.
+### Build all targets at once
 
-## mazes submodule
+```sh
+cmake --build build -j4                # or -j$(nproc)
+```
 
-`mazes/mazefiles` is a git submodule of
+### Build individual targets
+
+Each frontend is its own CMake target; build only what you need:
+
+| Target | Command | Produces |
+|---|---|---|
+| `mm_core` | `cmake --build build --target mm_core` | `libmm_core` static library (maze loader) that every frontend links |
+| `run` | `cmake --build build --target run` | `build/run` — offline benchmark CLI |
+| `mms` | `cmake --build build --target mms` | `build/mms` — mms GUI protocol wrapper |
+| `test_core` | `cmake --build build --target test_core` | `build/test_core` — unit smoke tests |
+
+For example, to build just the mms wrapper:
+
+```sh
+cmake --build build --target mms -j4
+```
+
+### Clean / full rebuild
+
+```sh
+cmake --build build --target clean   # remove build products, keep cache
+rm -rf build && cmake -S . -B build  # from-scratch reconfigure
+```
+
+After building, verify with `./build/test_core` (must print `ALL TESTS
+PASSED`).
+
+## mazes (submodule only)
+
+No maze files are committed to this repository. `mazes/mazefiles` is
+referenced *exclusively* as a git submodule of
 [github.com/micromouseonline/mazefiles](https://github.com/micromouseonline/mazefiles)
-(525 mazes: `classic/`, `halfsize/`).
+(525 classic mazes plus half-size variants): the recorded gitlink is the
+only maze-related artifact in git, and the files materialize under
+`mazes/mazefiles/` at clone time via the submodule checkout.
 
 ```sh
 git clone --recurse-submodules https://github.com/minawashere/micromouse_algorithim
