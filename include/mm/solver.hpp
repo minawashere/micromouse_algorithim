@@ -817,6 +817,17 @@ namespace mm
                     cy + kDy[back] >= MAZE_H)
                     continue; // border: no predecessor cell
                 int p = idx(cx + kDx[back], cy + kDy[back]);
+                // GOAL CELLS ARE ABSORBING: forbid goal -> goal ARCS in the
+                // flood itself. Without this the (cell, heading) Dijkstra
+                // values the center ring lap as a cheap heading-snap (cheaper
+                // than a 180 spin), so legs that start inside the center
+                // extract a plan that circles the 2x2 before exiting -- the
+                // mouse "keeps navigating inside" the zero-weight region.
+                // For center-directed floods the goals are all seeds (kin=0),
+                // so this ban is inert there.
+                if (isGoalTruth(cx, cy) &&
+                    isGoalTruth(cx + kDx[back], cy + kDy[back]))
+                    continue;
                 for (int dh = 0; dh < kDirCount; ++dh)
                 {
                     Cost turn = dh == d ? 0
@@ -894,15 +905,33 @@ namespace mm
                 const int mh = static_cast<int>(mdir_);
                 if (kin[c][mh] == kFfInf)
                     return 0; // no optimistic route to the goal from here
-                // ---- extract the committed kinematic descent (cycle-free: the
-                // greedy argmin equals the Dijkstra edge, kin drops >= 64/step)
+                // ---- extract the committed kinematic descent (cycle-free:
+                // the greedy argmin equals the Dijkstra edge, kin drops
+                // >= 64/step). Goal cells (flood weight 0) are ABSORBING per
+                // competition semantics: the mouse stops at the FIRST tile,
+                // and no leg may step goal -> goal ("if current cell weight
+                // == 0, don't go to any cell with weight 0, instead go to
+                // weights > 0"). The kinematic flood bans goal->goal arcs
+                // too, so the center "ring lap" the plan used to drive to
+                // snap headings is impossible: those edges have no kin value
+                // at all. Two extraction rules:
+                //   * a step INTO a weight-0 cell is legal only as this leg's
+                //     own terminator (center-directed legs: atGoal true there
+                //     -- the extraction stops the moment it is entered)
+                //   * standing ON a goal cell, a value-EQUAL step is accepted
+                //     in addition to strict descents: the flood's own
+                //     derivation of kin[pc][pd] guarantees such a step exists
+                //     and leads OUT of the center (same turn math, known face
+                //     => curiosity 0), so a one-touch exit always extracts
                 Dir plan[kMAZE];
-                int px = mx_, py = my_, pd = mh, pn = 0;
+                int pn = 0;
                 bool stuck = false;
+                int px = mx_, py = my_, pd = mh;
                 while (!atGoal(px, py) && pn < kMAZE)
                 {
                     int pc = idx(px, py);
                     const Cost kinCur = kin[pc][pd];
+                    const bool onGoal = isGoalTruth(px, py);
                     Cost bestV = kFfInf;
                     int bestRw = 3, bestAv = 1;
                     Dir pick = D_N;
@@ -918,8 +947,14 @@ namespace mm
                         int nc = idx(px + kDx[d], py + kDy[d]);
                         if (kin[nc][d] == kFfInf)
                             continue; // no route from there either
-                        if (kin[nc][d] >= kinCur)
-                            continue; // no strict improvement: keep the plan cycle-free
+                        // weight 0 -> weight 0 is forbidden outright (the
+                        // center ring lap lives and dies on this rule)
+                        if (onGoal && isGoalTruth(px + kDx[d], py + kDy[d]))
+                            continue;
+                        // strict value descent normally; on a goal stand also
+                        // accept the value-equal flood derivation step
+                        if (kin[nc][d] > kinCur || (kin[nc][d] == kinCur && !onGoal))
+                            continue;
                         Cost turnv = d == pd ? 0 : d == (pd + 2) % kDirCount ? kFfUturn : kFfTurn;
                         Cost v = turnv + kFfStraight + kin[nc][d];
                         int rw = cfg_.ffStraight
@@ -959,11 +994,38 @@ namespace mm
                 }
                 if (pn == 0)
                 {
+                    if (vDebug_)
+                    {
+                        int c0 = idx(mx_, my_);
+                        fprintf(stderr,
+                                "FF empty at=(%d,%d) h=%d fl=%d st=%d kin[cur]=%lld "
+                                "d0=%lld d1=%lld d2=%lld d3=%lld st0=%d st1=%d st2=%d "
+                                "st3=%d\n",
+                                mx_, my_, static_cast<int>(mdir_), flops, (int)stuck,
+                                (long long)kin[c0][static_cast<int>(mdir_)],
+                                (long long)kin[c0][0], (long long)kin[c0][1],
+                                (long long)kin[c0][2], (long long)kin[c0][3],
+                                (int)known_.status(mx_, my_, D_N), (int)known_.status(mx_, my_, D_E),
+                                (int)known_.status(mx_, my_, D_S), (int)known_.status(mx_, my_, D_W));
+                    }
                     if (!stuck || ++flops > 1)
                         return 0; // still trapped on a fresh flood: give up
                     continue;     // one re-flood round
                 }
                 flops = 0;
+                if (vDebug_)
+                {
+                    int c0 = idx(mx_, my_);
+                    fprintf(stderr,
+                            "FF plan at=(%d,%d) h=%d kin[cur]=%lld d0=%lld d1=%lld d2=%lld "
+                            "d3=%lld:",
+                            mx_, my_, static_cast<int>(mdir_),
+                            (long long)kin[c0][static_cast<int>(mdir_)], (long long)kin[c0][0],
+                            (long long)kin[c0][1], (long long)kin[c0][2], (long long)kin[c0][3]);
+                    for (int i = 0; i < pn; ++i)
+                        fprintf(stderr, " %d", (int)plan[i]);
+                    fprintf(stderr, "\n");
+                }
                 // ---- drive the committed plan; replan on any wall reveal
                 for (int i = 0; i < pn; ++i)
                 {
