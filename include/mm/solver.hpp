@@ -140,6 +140,15 @@ namespace mm
             known_ = KnownMaze{};
             vizPathColor_ = 'g'; // phase 1 / flood legs draw green
             sealed_ = false;
+            // flood-scratch insurance (Solver instances are normally fresh per
+            // run, but a re-solve must never inherit the previous roadmap):
+            // virtual sealed faces and the flood-skip oracle die with the map.
+            std::fill(std::begin(ffSeal_), std::end(ffSeal_), 0);
+            sealQn_ = 0;
+            knownVer_ = 0;
+            ffLastSrc_ = nullptr;
+            ffLastNSrc_ = -1;
+            ffLastVer_ = -1;
             vizInit();
             if (cfg_.floodFill)
                 return solveFloodFill();
@@ -223,6 +232,13 @@ namespace mm
         // filter in runTo() derives the neighbor endpoints from (mx_,my_) — no
         // parallel change arrays needed (cache/RAM conscious).
         uint8_t chFaces_ = 0;
+        // Solver-side write to the known map; bumps the flood-skip oracle.
+        void knowSet(int x, int y, Dir d, WallStatus s)
+        {
+            known_.setStatus(x, y, d, s);
+            ++knownVer_;
+        }
+
         bool sense()
         {
             bool changed = false;
@@ -239,9 +255,16 @@ namespace mm
                 WallStatus s = q.wall ? kWall : kOpen;
                 if (known_.status(mx_, my_, q.d) != s)
                 {
-                    known_.setStatus(mx_, my_, q.d, s);
+                    knowSet(mx_, my_, q.d, s);
                     changed = true;
                     chFaces_ |= static_cast<uint8_t>(1u << q.d);
+                    int nx = mx_ + kDx[q.d], ny = my_ + kDy[q.d];
+                    if (nx >= 0 && ny >= 0 && nx < MAZE_W && ny < MAZE_H)
+                    {
+                        // a wall landing here may complete a tip: recount both cells
+                        sealEnqueue(idx(mx_, my_));
+                        sealEnqueue(idx(nx, ny));
+                    }
                 }
             }
             // back side: open (we came through it) ONLY if we actually entered
@@ -252,11 +275,138 @@ namespace mm
             if (static_cast<int>(back) == arrivalFace_ &&
                 known_.status(mx_, my_, back) == kUnknown)
             {
-                known_.setStatus(mx_, my_, back, kOpen);
+                knowSet(mx_, my_, back, kOpen);
                 changed = true;
                 chFaces_ |= static_cast<uint8_t>(1u << back);
+                // entering a cell may complete ITS wall set (then its entrance
+                // is this just-written open face) as well as the neighbor's
+                sealEnqueue(idx(mx_, my_));
+                int nx = mx_ + kDx[back], ny = my_ + kDy[back];
+                if (nx >= 0 && ny >= 0 && nx < MAZE_W && ny < MAZE_H)
+                    sealEnqueue(idx(nx, ny));
             }
+            // LOOK-AHEAD: the front IR rig is calibrated to see the wall TWO
+            // cells down a straight corridor. Whenever the face directly ahead
+            // is known/open, probe the same wall one cell further and record
+            // it -- planning then detours around walls before the mouse has
+            // physically reached them (no decelerate/sense/recover cycles).
+            // Only the remote face is extra knowledge: it is written exactly
+            // once and can never contradict a later honest measurement.
+            Dir fdir = mdir_;
+            if (known_.status(mx_, my_, fdir) == kOpen)
+            {
+                int fx = mx_ + kDx[fdir], fy = my_ + kDy[fdir];
+                if (fx >= 0 && fy >= 0 && fx < MAZE_W && fy < MAZE_H &&
+                    known_.status(fx, fy, fdir) == kUnknown)
+                {
+                    WallStatus s2 = truth_.wall(fx, fy, fdir) ? kWall : kOpen;
+                    knowSet(fx, fy, fdir, s2);
+                    changed = true;
+                    // a walled look-ahead face can complete a dead end: queue
+                    // both of its cells for the seal pass below
+                    sealEnqueue(idx(fx, fy));
+                    int gx = fx + kDx[fdir], gy = fy + kDy[fdir];
+                    if (gx >= 0 && gy >= 0 && gx < MAZE_W && gy < MAZE_H)
+                        sealEnqueue(idx(gx, gy));
+                }
+            }
+            // RECURSIVE DEAD-END SEALING: whether the mouse just measured new
+            // walls or the look-ahead completed a dead end, recount affected
+            // cells and cascade virtual walls back along corridors.
+            changed = sealCascade() > 0 || changed;
             return changed;
+        }
+
+        // ---- recursive dead-end sealing. A cell whose faces are ALL known
+        // with exactly 3 walls (its "entrance" measured kOpen -- the mouse
+        // crossed it) can never be on a useful route: a path entering such a
+        // tip can only leave back out of the SAME entrance -- a wasted u-turn
+        // with zero curiosity left to harvest. The tip's entrance is sealed
+        // with a VIRTUAL wall kept OUTSIDE known_ (ffSeal_ mask): kin values
+        // for useful cells are unaffected (Dijkstra paths are simple and
+        // never enter dead-end subtrees), the mms renderer keeps showing
+        // honest walls, and truthful measurements can never contradict a
+        // computed deduction. ffKinFlood honors the mask on its arrival
+        // gates; the extraction sees masked tips as kin-inf and skips them;
+        // A* paths never needed dead ends either. Corridors cascade: masking
+        // a tip's entrance makes the neighbor 3-walled, masking recursively
+        // back to a >=2-open cell. Exclusions keep the state space honest:
+        //   * never mask a face touching a flood source (goal cells / start):
+        //     leg terminators must stay enterable
+        //   * never mask a face whose either endpoint is the pose cell or one
+        //     of its 4 neighbors: any corridor the mouse stands in keeps its
+        //     escape chain (a chain cell keeps 2 open faces, so the cells on
+        //     the pose->mouth route never become mask candidates)
+        // A cell whose only non-wall face is UNKNOWN is NOT masked: that
+        // face's truth may still be measured later from the neighbor side.
+        uint16_t ffSeal_[kMAZE] = {}; // bit per Dir: virtual sealed faces
+        bool isSealed(int c, Dir d) const { return (ffSeal_[c] >> d) & 1; }
+        bool isSealed(int x, int y, Dir d) const { return isSealed(idx(x, y), d); }
+        void sealSet(int x, int y, Dir d)
+        {
+            int c = idx(x, y);
+            ffSeal_[c] |= static_cast<uint16_t>(1u << d);
+        }
+        // walls + virtual walls (border faces already read back as kWall)
+        bool wallLike(int x, int y, Dir d) const
+        {
+            return known_.status(x, y, d) == kWall || isSealed(x, y, d);
+        }
+        int sealQ_[1024];
+        int sealQn_ = 0;
+        void sealEnqueue(int c)
+        {
+            if (sealQn_ < 1024)
+                sealQ_[sealQn_++] = c;
+            // overflow: rare (a single sense() reveals <= 5 faces); drop is
+            // harmless -- unqueued cells recount on a later sense()
+        }
+        int sealCascade() // returns faces masked
+        {
+            int masked = 0;
+            const int px = mx_, py = my_;
+            auto nearPose = [&](int x, int y)
+            {
+                if (x == px && y == py)
+                    return true;
+                for (int dd = 0; dd < kDirCount; ++dd)
+                    if (x == px + kDx[dd] && y == py + kDy[dd])
+                        return true;
+                return false;
+            };
+            for (int q = 0; q < sealQn_; ++q)
+            {
+                int c = sealQ_[q];
+                int cx = c & 0xF, cy = c >> 4;
+                if (isGoalTruth(cx, cy) || nearPose(cx, cy))
+                    continue;
+                Dir other = D_N;
+                int blocked = 0;
+                for (int d = 0; d < kDirCount; ++d)
+                {
+                    Dir dd = static_cast<Dir>(d);
+                    if (wallLike(cx, cy, dd))
+                        ++blocked;
+                    else if (known_.status(cx, cy, dd) == kOpen)
+                        other = dd;
+                }
+                if (blocked != 3 || known_.status(cx, cy, other) != kOpen)
+                    continue; // not a fully-known dead end (or already masked)
+                int nx = cx + kDx[other], ny = cy + kDy[other];
+                if (nx < 0 || ny < 0 || nx >= MAZE_W || ny >= MAZE_H)
+                    continue; // must not happen (borders count as walls)
+                if (isGoalTruth(nx, ny) || nearPose(nx, ny))
+                    continue;
+                sealSet(cx, cy, other); // VIRTUAL wall, routing-only
+                // symmetric twin on the neighbor side (the face is one
+                // physical edge; the flood / cascade read it from either cell)
+                sealSet(nx, ny, static_cast<Dir>((other + 2) % kDirCount));
+                ++masked;
+                // the neighbor lost a face: recount it (corridor cascade)
+                sealEnqueue(idx(nx, ny));
+            }
+            sealQn_ = 0;
+            return masked;
         }
 
         // How many forward *moves* we can execute in one continuous batch starting
@@ -753,8 +903,52 @@ namespace mm
         uint8_t ffAvoid_[kMAZE / 8 + 1] = {}; // leg-0 outbound cells (bit-packed)
 
         // Directional kinematic flood scratch (single-threaded, no allocation).
-        // Heap size bound: <= 16 goal-heading seeds + <= 4 relaxations per one
+        // Node-count bound: <= 16 goal-heading seeds + <= 4 relaxations per one
         // of the 1024 states = 4112 pushes worst case; 4480 is safe headroom.
+        static constexpr int kFfNodeCap = 4480;
+        static constexpr int kFfStates = kMAZE * kDirCount; // 1024 (cell, heading)
+        // Dial's bucket queue (O(1) push/pop instead of the heap's O(log n)):
+        // edge deltas are small bounded integers (straight 64 / turns 0,64,128
+        // plus <= 1 curiosity term), so a ring of buckets indexed by
+        // cost % R, with R strictly greater than the worst per-step delta,
+        // visits costs in strictly nondecreasing order. Window span:
+        // kFfStraight + kFfUturn + curio + slack. Only curiosity values beyond
+        // ~3890 would overflow the static ring -- the legacy binary heap is
+        // kept as a fallback for that pathological configuration.
+        static constexpr int kFfRingCap = 4096;
+        int16_t ffDialSt_[kFfNodeCap];  // queued state per node slot
+        int16_t ffDialNx_[kFfNodeCap];  // next queued node within its bucket
+        int16_t ffRingHead_[kFfRingCap];
+        int ffDialN_ = 0;               // allocated queue nodes (this flood)
+        int ffRem_ = 0;                 // queued (not yet popped) nodes
+        Cost ffDialLo_ = 0;             // lowest not-yet-drained cost (window base)
+        // Generation-stamped kin: ffKin_ holds the MATERIALIZED values readers
+        // use; ffStamp_ + ffDirty_ remember exactly which states the PREVIOUS
+        // flood wrote, so the next flood resets only those states instead of
+        // sweeping all 1024 (zero-cost clearing).
+        Cost ffKin_[kMAZE][kDirCount];
+        uint32_t ffStamp_[kFfStates] = {};
+        bool ffStampLive_ = false;      // scratch boot (ring heads / kin) done
+        uint16_t ffDirty_[kFfStates + 8];
+        int ffDirtyN_ = 0;
+        bool ffDirtyOvf_ = false;
+        uint32_t ffGen_ = 1;            // bumps per flood; 0 = never-written stamp
+        uint8_t ffClosed_[kFfStates / 8 + 1] = {};
+        // known-map version: bumped on every solver-side write to known_.
+        // The per-round flood is skipped entirely when nothing changed since
+        // the previous flood of the same source list (return legs re-trigger
+        // floods on every cell otherwise -- the map did not move).
+        int knownVer_ = 0;
+
+        void ffKinInitScratch()
+        {
+            std::fill(ffRingHead_, ffRingHead_ + kFfRingCap, -1);
+            for (int i = 0; i < kMAZE; ++i)
+                for (int d = 0; d < kDirCount; ++d)
+                    ffKin_[i][d] = kFfInf;
+        }
+
+        // Fallback node type (binary heap) for the pathological ring overflow.
         struct FFHE
         {
             Cost k;
@@ -775,10 +969,45 @@ namespace mm
                           [](const FFHE& a, const FFHE& b) { return a.k > b.k; });
             return ffHeap_[--ffHn_];
         }
+
+        void ffRingPush(Cost k, int s)
+        {
+            if (ffDialN_ >= kFfNodeCap)
+                return; // unreachable: bound = seeds + 4 relaxations/state
+            int node = ffDialN_++;
+            ffDialSt_[node] = static_cast<int16_t>(s);
+            int b = static_cast<int>(k % kFfRingCap);
+            ffDialNx_[node] = ffRingHead_[b];
+            ffRingHead_[b] = static_cast<int16_t>(node);
+            ++ffRem_;
+        }
         static constexpr Cost kFfStraight = 64; // kinematic scale (planning only)
         static constexpr Cost kFfTurn = 64;     // 90° penalty; straight+turn = 128
         static constexpr Cost kFfUturn = 128;   // u-turn penalty stands alone
         static constexpr Cost kFfInf = INT32_MAX;
+
+        // Flood-skip cache: same source list + unchanged known-map version =>
+        // the previous flood's materialized kin is still exact; the whole
+        // Dijkstra (and its rollback) is skipped.
+        const int* ffLastSrc_ = nullptr;
+        int ffLastNSrc_ = -1;
+        int ffLastVer_ = -1;
+
+        // Write a kin value; record the state ONCE in the per-generation dirty
+        // list so the next flood can cheaply reset exactly what this one wrote.
+        void ffKinPut(int cell, int d, Cost v)
+        {
+            int s = cell * kDirCount + d;
+            if (ffStamp_[s] != ffGen_)
+            {
+                if (ffDirtyN_ < static_cast<int>(sizeof(ffDirty_) / sizeof(ffDirty_[0])))
+                    ffDirty_[ffDirtyN_++] = static_cast<uint16_t>(s);
+                else
+                    ffDirtyOvf_ = true; // next flood falls back to a full sweep
+                ffStamp_[s] = ffGen_;
+            }
+            ffKin_[cell][d] = v;
+        }
 
         // Backward Dijkstra from the goal seeds over the (cell, heading) state
         // graph: kin[c][d] = min real cost to travel from (c, facing d) to any
@@ -787,31 +1016,95 @@ namespace mm
         // where turn is 0 / kFfTurn (90°) / kFfUturn, and curiosity
         // (cfg_.ffCurio) is added only when that face is still UNEXPLORED.
         // A kWall face can never be crossed; kUnknown faces can.
-        void ffKinFlood(const int* src, int nSrc, Cost kin[kMAZE][kDirCount])
+        void ffKinFlood(const int* src, int nSrc)
         {
-            for (int c = 0; c < kMAZE; ++c)
-                for (int d = 0; d < kDirCount; ++d)
-                    kin[c][d] = kFfInf;
+            if (src == ffLastSrc_ && nSrc == ffLastNSrc_ && ffLastVer_ == knownVer_)
+                return; // nothing changed: the last kin table is still exact
+            if (!ffStampLive_)
+            {
+                ffStampLive_ = true;
+                std::fill(ffRingHead_, ffRingHead_ + kFfRingCap, -1);
+                for (int i = 0; i < kMAZE; ++i)
+                    for (int d = 0; d < kDirCount; ++d)
+                        ffKin_[i][d] = kFfInf;
+            }
+            else
+            {
+                // generational clearing: reset only the states the last flood
+                // actually wrote (the dirty list is exact, deduped via stamps)
+                for (int i = 0; i < ffDirtyN_; ++i)
+                {
+                    int s = ffDirty_[i];
+                    ffKin_[s >> 2][s & 3] = kFfInf;
+                    ffClosed_[s >> 3] &= static_cast<uint8_t>(~(1u << (s & 7)));
+                }
+            }
+            ffDirtyN_ = 0;
+            ffDirtyOvf_ = false;
+            ++ffGen_;
+            // Dial's ring when the widest edge fits the window; the binary
+            // heap only for curiosity weights absurd enough to overflow 4096
+            // buckets (never in practice).
+            const bool dial = static_cast<int>(kFfStraight + kFfUturn +
+                                               (cfg_.ffCurio > 0 ? cfg_.ffCurio : 0)) + 2 <=
+                              kFfRingCap;
+            ffDialN_ = 0;
+            ffRem_ = 0;
+            ffDialLo_ = 0;
             ffHn_ = 0;
             for (int i = 0; i < nSrc; ++i)
                 for (int d = 0; d < kDirCount; ++d)
-                    if (kin[src[i]][d] == kFfInf)
+                    if (ffKin_[src[i]][d] == kFfInf)
                     {
-                        kin[src[i]][d] = 0; // any arrival heading ends the leg
-                        ffHeapPush(0, src[i] * kDirCount + d);
+                        ffKinPut(src[i], d, 0); // any arrival heading ends the leg
+                        if (dial)
+                            ffRingPush(0, src[i] * kDirCount + d);
+                        else
+                            ffHeapPush(0, src[i] * kDirCount + d);
                     }
-            while (ffHn_)
+            for (;;)
             {
-                FFHE e = ffHeapPop();
-                int c = e.s / kDirCount, d = e.s % kDirCount;
-                if (kin[c][d] < e.k)
-                    continue; // stale entry
+                int c, d;
+                Cost ek;
+                if (dial)
+                {
+                    if (ffRem_ == 0)
+                        break;
+                    int b = static_cast<int>(ffDialLo_ % kFfRingCap);
+                    int guard = kFfRingCap; // safety valve (window invariant)
+                    while (ffRingHead_[b] < 0)
+                    {
+                        ++ffDialLo_; // every pending cost sits within the span
+                        b = static_cast<int>(ffDialLo_ % kFfRingCap);
+                        if (--guard == 0)
+                            return; // unreachable: flood without a windowed queue
+                    }
+                    int node = ffRingHead_[b];
+                    int s = ffDialSt_[node];
+                    ffRingHead_[b] = ffDialNx_[node];
+                    --ffRem_;
+                    if ((ffClosed_[s >> 3] >> (s & 7)) & 1)
+                        continue; // state finalized; a costlier duplicate node
+                    ffClosed_[s >> 3] |= static_cast<uint8_t>(1u << (s & 7));
+                    c = s / kDirCount, d = s % kDirCount;
+                    ek = ffKin_[c][d];
+                }
+                else
+                {
+                    if (ffHn_ == 0)
+                        break;
+                    FFHE e = ffHeapPop();
+                    c = e.s / kDirCount, d = e.s % kDirCount;
+                    if (ffKin_[c][d] < e.k)
+                        continue; // stale entry
+                    ek = e.k;
+                }
                 // the physical face crossed on arrival into c heading d
                 Dir back = static_cast<Dir>((d + 2) % kDirCount);
                 int cx = c & 0xF, cy = c >> 4;
                 WallStatus st = known_.status(cx, cy, back);
-                if (st == kWall)
-                    continue; // cannot arrive heading d through a wall
+                if (st == kWall || isSealed(cx, cy, back))
+                    continue; // cannot arrive heading d through a virtual or measured wall
                 Cost curios = st == kUnknown ? static_cast<Cost>(cfg_.ffCurio) : 0;
                 if (cx + kDx[back] < 0 || cx + kDx[back] >= MAZE_W || cy + kDy[back] < 0 ||
                     cy + kDy[back] >= MAZE_H)
@@ -833,14 +1126,20 @@ namespace mm
                     Cost turn = dh == d ? 0
                                 : dh == (d + 2) % kDirCount ? kFfUturn
                                                             : kFfTurn;
-                    Cost nk = e.k + kFfStraight + turn + curios;
-                    if (nk < kin[p][dh])
+                    Cost nk = ek + kFfStraight + turn + curios;
+                    if (nk < ffKin_[p][dh])
                     {
-                        kin[p][dh] = nk;
-                        ffHeapPush(nk, p * kDirCount + dh);
+                        ffKinPut(p, dh, nk);
+                        if (dial)
+                            ffRingPush(nk, p * kDirCount + dh);
+                        else
+                            ffHeapPush(nk, p * kDirCount + dh);
                     }
                 }
             }
+            ffLastSrc_ = src;
+            ffLastNSrc_ = nSrc;
+            ffLastVer_ = knownVer_;
         }
         void ffVisReset() { std::memset(ffVis_, 0, sizeof(ffVis_)); }
         bool ffVis(int c) const { return (ffVis_[c >> 3] >> (c & 7)) & 1; }
@@ -884,7 +1183,9 @@ namespace mm
             auto gbb = [](const uint8_t* m, int c) { return (m[c >> 3] >> (c & 7)) & 1; };
             auto sbb = [](uint8_t* m, int c) { m[c >> 3] |= static_cast<uint8_t>(1u << (c & 7)); };
             const bool useAv = avoid && cfg_.ffAvoid;
-            Cost kin[kMAZE][kDirCount];
+            Cost (&kin)[kMAZE][kDirCount] = ffKin_; // static, flood-managed table
+            bool kinValid_ = false;    // kin holds a THIS-LEG flood result
+            int lastFloodVer_ = -1;    // knownVer_ snapshot of that flood
             uint32_t h = 2166136261u;
             int flops = 0;
             int moves = 0;
@@ -899,9 +1200,17 @@ namespace mm
                 // REVISITED cells, so the plan kept steering toward unknown
                 // faces beside known corridors and the mouse rotated to face
                 // a wall it should already know, only to turn straight back.
-                sense();
+                // (sense() also runs the look-ahead probe and dead-end seal
+                // cascade; it returns whether ANY known face changed -- the
+                // flood-skip oracle together with knownVer_.)
+                const bool knownChanged = sense();
                 ffVis(c, true);
-                ffKinFlood(floodSrc, nSrc, kin);
+                if (!kinValid_ || knownChanged || knownVer_ != lastFloodVer_)
+                {
+                    ffKinFlood(floodSrc, nSrc);
+                    lastFloodVer_ = knownVer_;
+                    kinValid_ = true;
+                }
                 const int mh = static_cast<int>(mdir_);
                 if (kin[c][mh] == kFfInf)
                     return 0; // no optimistic route to the goal from here
@@ -1048,7 +1357,11 @@ namespace mm
                         return 0; // stall/crash detection analog
                     // We PHYSICALLY crossed the pick face: record it open (and
                     // its symmetric twin via KnownMaze).
-                    known_.setStatus(mx_, my_, pick, kOpen);
+                    if (known_.status(mx_, my_, pick) != kOpen)
+                    {
+                        known_.setStatus(mx_, my_, pick, kOpen);
+                        ++knownVer_;
+                    }
                     advanceStats(1);
                     mx_ += static_cast<int>(kDx[pick]);
                     my_ += static_cast<int>(kDy[pick]);
