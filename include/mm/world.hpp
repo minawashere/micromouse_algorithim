@@ -16,6 +16,15 @@ class IWorld {
   virtual bool wallFront() = 0;
   virtual bool wallRight() = 0;
   virtual bool wallLeft() = 0;
+  // Calibrated 2-cell look-ahead IR: line of sight along the CURRENT heading,
+  // reporting the face BETWEEN the next cell and the one after it. Only
+  // trustworthy when the immediate front face is open (the solver consults
+  // it exclusively in that case, so the sight is physically unobstructed).
+  //   0 = no wall detected, 1 = wall detected
+  //  -1 = this rig is NOT calibrated for 2-cell reads (no such protocol
+  //       command) -- the solver then plans strictly on the 3-face rig and
+  //       must never extend knowledge by peeking behind the interface.
+  virtual int wallAhead2() { return -1; }
   // Motion. Returns false on crash (run is over, abandon and report).
   virtual bool moveForward(int cells = 1) = 0;
   virtual void turnRight() = 0;

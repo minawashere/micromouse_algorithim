@@ -299,15 +299,25 @@ namespace mm
                 if (fx >= 0 && fy >= 0 && fx < MAZE_W && fy < MAZE_H &&
                     known_.status(fx, fy, fdir) == kUnknown)
                 {
-                    WallStatus s2 = truth_.wall(fx, fy, fdir) ? kWall : kOpen;
-                    knowSet(fx, fy, fdir, s2);
-                    changed = true;
-                    // a walled look-ahead face can complete a dead end: queue
-                    // both of its cells for the seal pass below
-                    sealEnqueue(idx(fx, fy));
-                    int gx = fx + kDx[fdir], gy = fy + kDy[fdir];
-                    if (gx >= 0 && gy >= 0 && gx < MAZE_W && gy < MAZE_H)
-                        sealEnqueue(idx(gx, gy));
+                    // FIRMWARE-HONEST look-ahead: the remote wall is read by
+                    // the CALIBRATED 2-cell IR sensor (IWorld::wallAhead2) --
+                    // never by peeking at truth_. Worlds without that hardware
+                    // (the mms protocol reports one cell) answer -1 and the
+                    // mouse plans strictly on measured faces: driving into an
+                    // unmeasured wall is exactly the pre-planning crash.
+                    int far2 = w_.wallAhead2();
+                    if (far2 >= 0)
+                    {
+                        WallStatus s2 = far2 == 1 ? kWall : kOpen;
+                        knowSet(fx, fy, fdir, s2);
+                        changed = true;
+                        // a walled look-ahead face can complete a dead end:
+                        // queue both of its cells for the seal pass below
+                        sealEnqueue(idx(fx, fy));
+                        int gx = fx + kDx[fdir], gy = fy + kDy[fdir];
+                        if (gx >= 0 && gy >= 0 && gx < MAZE_W && gy < MAZE_H)
+                            sealEnqueue(idx(gx, gy));
+                    }
                 }
             }
             // RECURSIVE DEAD-END SEALING: whether the mouse just measured new

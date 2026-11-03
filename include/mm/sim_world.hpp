@@ -39,6 +39,17 @@ class SimWorld : public IWorld {
   bool wallLeft() override {
     return truth_.wall(x_, y_, static_cast<Dir>((dir_ + 3) % kDirCount));
   }
+  // Calibrated 2-cell IR: the wall between the next cell and the one after
+  // it, along the current heading (line-of-sight: the caller has already
+  // proven the immediate front face open). Out-of-range neighbor cell means
+  // the face lies on the border -> wall.
+  int wallAhead2() override {
+    Dir d = dir_;
+    int nx = x_ + kDx[d], ny = y_ + kDy[d];
+    if (nx < 0 || ny < 0 || nx >= MAZE_W || ny >= MAZE_H)
+      return 1;
+    return truth_.wall(nx, ny, d) ? 1 : 0;
+  }
 
   bool moveForward(int cells) override {
     if (verbose_)
