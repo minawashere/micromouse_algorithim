@@ -23,6 +23,10 @@ class MmsWorld : public IWorld {
   // off for simulators -- the solver never asks and plans strictly on
   // measured faces. (Return -1 "not calibrated" if it ever asked anyway.)
   int wallAhead2() override { return -1; }
+  // Diagonal-sensor channels (cfg.lookAheadDiag, --look-ahead-diag) do not
+  // exist in the mms protocol either: always "not calibrated".
+  int wallLeft2() override { return -1; }
+  int wallRight2() override { return -1; }
 
   bool moveForward(int cells) override {
     send("moveForward %d", cells);

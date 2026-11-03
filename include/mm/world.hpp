@@ -26,7 +26,15 @@ class IWorld {
   // SOLVER-SIDE GATE: the solver only ever calls this when cfg.lookAhead is
   // set (--look-ahead, real hardware with the diagonal-sensor package);
   // simulators run with the flag off and never ask -- no rig to emulate.
+  // DIAGONAL CHANNELS (--look-ahead-diag): wallLeft2()/wallRight2() are the
+  // same idea for the SIDE faces of the REMOTE cell (see sense()); same
+  // return contract, same honesty rule (-1 = rig cannot read that channel).
   virtual int wallAhead2() { return -1; }
+  // Diagonal-sensor channels for the REMOTE cell (one cell ahead along the
+  // current heading): the wall on the remote cell's LEFT / RIGHT side.
+  //   0 = no wall detected, 1 = wall detected, -1 = channel not available.
+  virtual int wallLeft2() { return -1; }
+  virtual int wallRight2() { return -1; }
   // Motion. Returns false on crash (run is over, abandon and report).
   virtual bool moveForward(int cells = 1) = 0;
   virtual void turnRight() = 0;

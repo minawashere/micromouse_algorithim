@@ -62,6 +62,13 @@ namespace mm
         // corridors. FALSE by default: simulators (mms protocol reports the
         // current cell only) do not have this rig -- never assume it.
         bool lookAhead = false;
+        // DIAGONAL look-ahead rig (--look-ahead-diag): the Diagonal SENSORS
+        // read the left/right faces of the REMOTE cell (one cell ahead along
+        // the heading), so dead ends in the upcoming cell are recognized
+        // before the mouse physically arrives. Independent of lookAhead;
+        // worlds without that rig answer -1 (not calibrated) and nothing is
+        // fabricated. FALSE by default.
+        bool lookAheadDiag = false;
         // CURIOSITY_WEIGHT: penalty (in flood units) added to the flood cost of
         // crossing an UNEXPLORED face during the directional kinematic flood.
         // Unexplored walls are neither open nor closed: the wave only pushes
@@ -321,6 +328,43 @@ namespace mm
                         // queue both of its cells for the seal pass below
                         sealEnqueue(idx(fx, fy));
                         int gx = fx + kDx[fdir], gy = fy + kDy[fdir];
+                        if (gx >= 0 && gy >= 0 && gx < MAZE_W && gy < MAZE_H)
+                            sealEnqueue(idx(gx, gy));
+                    }
+                }
+            }
+            // DIAGONAL look-ahead (--look-ahead-diag -- real-HW rig): while
+            // the face ahead is open, the DIAGONAL sensors read the remote
+            // cell's LEFT and RIGHT faces directly. Mapping them immediately
+            // lets the flood (kinematics) and the dead-end sealCascade()
+            // resolve dead ends in the upcoming cell WITHOUT the mouse ever
+            // entering it. Honesty is the same as the forward channel: a face
+            // is only written from an actual sensor read, only when unknown;
+            // rigs / protocols without the channels answer -1 and nothing is
+            // fabricated (the map keeps whatever the 3-face rig knows).
+            if (cfg_.lookAheadDiag && known_.status(mx_, my_, fdir) == kOpen)
+            {
+                int fx = mx_ + kDx[fdir], fy = my_ + kDy[fdir];
+                if (fx >= 0 && fy >= 0 && fx < MAZE_W && fy < MAZE_H)
+                {
+                    // remote left / right faces, relative to the mouse heading
+                    const Dir sd[2] = {static_cast<Dir>((fdir + 3) % kDirCount),
+                                       static_cast<Dir>((fdir + 1) % kDirCount)};
+                    const int sv[2] = {w_.wallLeft2(), w_.wallRight2()};
+                    for (int ch = 0; ch < 2; ++ch)
+                    {
+                        int v = sv[ch];
+                        if (v < 0)
+                            continue; // channel not available: leave unknown
+                        WallStatus s = v == 1 ? kWall : kOpen;
+                        if (known_.status(fx, fy, sd[ch]) == s)
+                            continue; // no news is not a change
+                        knowSet(fx, fy, sd[ch], s);
+                        changed = true;
+                        // a new wall/open can complete a dead end: recount
+                        // the remote cell and the neighbor sharing the face
+                        sealEnqueue(idx(fx, fy));
+                        int gx = fx + kDx[sd[ch]], gy = fy + kDy[sd[ch]];
                         if (gx >= 0 && gy >= 0 && gx < MAZE_W && gy < MAZE_H)
                             sealEnqueue(idx(gx, gy));
                     }

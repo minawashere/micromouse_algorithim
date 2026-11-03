@@ -50,6 +50,20 @@ class SimWorld : public IWorld {
       return 1;
     return truth_.wall(nx, ny, d) ? 1 : 0;
   }
+  // Calibrated diagonal channels: the left / right faces of the REMOTE cell
+  // (one cell ahead). Needs the remote cell to exist; only consulted when
+  // the face between here and it is known open (the solver's gate), so the
+  // sight line is physically unobstructed.
+  int wallSide2(int off) {
+    Dir d = dir_;
+    int fx = x_ + kDx[d], fy = y_ + kDy[d];
+    if (fx < 0 || fy < 0 || fx >= MAZE_W || fy >= MAZE_H)
+      return -1; // no remote cell to read from inside
+    Dir sd = static_cast<Dir>((static_cast<int>(d) + off) % kDirCount);
+    return truth_.wall(fx, fy, sd) ? 1 : 0;
+  }
+  int wallLeft2() override { return wallSide2(3); }
+  int wallRight2() override { return wallSide2(1); }
 
   bool moveForward(int cells) override {
     if (verbose_)
