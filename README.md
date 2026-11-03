@@ -1,11 +1,7 @@
 # micromouse_algo
 
-A C++17 micromouse maze solver and benchmark harness for the standard
-16×16 competitive maze (center 2×2 goal). The mouse starts in an unknown
-maze with a 3-face sensor rig (front / left / right of the current cell —
-nothing is ever read from ground truth), builds its wall map cell by cell,
-and drives for the fastest possible run: weighted-A* trip planning while
-searching, then a final sprint along the fastest route found.
+C++ micromouse maze solver and benchmark harness for the standard
+16×16 competitive maze 
 
 The same solver drives three frontends:
 
