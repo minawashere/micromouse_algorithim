@@ -1,0 +1,2 @@
+/usr/bin/ar qc libmm_core.a CMakeFiles/mm_core.dir/src/lib/maze_io.cpp.o
+/usr/bin/ranlib libmm_core.a

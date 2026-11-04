@@ -1,0 +1,26 @@
+[
+{
+  "directory": "/home/lolo/Downloads/micromouse_clean/build",
+  "command": "/usr/bin/c++  -I/home/lolo/Downloads/micromouse_clean/include -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra -o CMakeFiles/mm_core.dir/src/lib/maze_io.cpp.o -c /home/lolo/Downloads/micromouse_clean/src/lib/maze_io.cpp",
+  "file": "/home/lolo/Downloads/micromouse_clean/src/lib/maze_io.cpp",
+  "output": "CMakeFiles/mm_core.dir/src/lib/maze_io.cpp.o"
+},
+{
+  "directory": "/home/lolo/Downloads/micromouse_clean/build",
+  "command": "/usr/bin/c++  -I/home/lolo/Downloads/micromouse_clean/include -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra -o CMakeFiles/run.dir/src/apps/run.cpp.o -c /home/lolo/Downloads/micromouse_clean/src/apps/run.cpp",
+  "file": "/home/lolo/Downloads/micromouse_clean/src/apps/run.cpp",
+  "output": "CMakeFiles/run.dir/src/apps/run.cpp.o"
+},
+{
+  "directory": "/home/lolo/Downloads/micromouse_clean/build",
+  "command": "/usr/bin/c++  -I/home/lolo/Downloads/micromouse_clean/include -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra -o CMakeFiles/mms.dir/src/apps/mms_main.cpp.o -c /home/lolo/Downloads/micromouse_clean/src/apps/mms_main.cpp",
+  "file": "/home/lolo/Downloads/micromouse_clean/src/apps/mms_main.cpp",
+  "output": "CMakeFiles/mms.dir/src/apps/mms_main.cpp.o"
+},
+{
+  "directory": "/home/lolo/Downloads/micromouse_clean/build",
+  "command": "/usr/bin/c++  -I/home/lolo/Downloads/micromouse_clean/include -O3 -DNDEBUG -std=gnu++17 -Wall -Wextra -o CMakeFiles/test_core.dir/tests/test_core.cpp.o -c /home/lolo/Downloads/micromouse_clean/tests/test_core.cpp",
+  "file": "/home/lolo/Downloads/micromouse_clean/tests/test_core.cpp",
+  "output": "CMakeFiles/test_core.dir/tests/test_core.cpp.o"
+}
+]
