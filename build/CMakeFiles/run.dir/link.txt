@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/run.dir/src/apps/run.cpp.o -o run  libmm_core.a 

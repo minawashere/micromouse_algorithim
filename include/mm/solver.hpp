@@ -58,7 +58,7 @@ namespace mm
         bool floodFill = false;
         bool ffStraight = false;         // Prefer going straight on ties
         bool ffAvoid = false;            // Prefer unvisited cells on return
-        int ffCurio = 64;                // Curiosity penalty on unexplored faces
+        int ffCurio = 0;                // Curiosity penalty on unexplored faces
         int ffLegs = 2;                  // Exploration legs (even, >= 2)
 
         // Real-hardware sensor rig options (inert in standard simulators)
@@ -121,24 +121,32 @@ namespace mm
             if (cfg_.mixMode)
                 return solveMix();
 
+            if (vTrace_)
+                fprintf(stderr, "=== PHASE 1 START: pose=(%d,%d) dir=%d ===\n", mx_, my_, (int)mdir_);
             if (!phase1())
             {
                 if (vDebug_)
                     fprintf(stderr, "PHASE1 FAILED\n");
                 return false;
             }
+            if (vTrace_)
+                fprintf(stderr, "=== PHASE 2 START: pose=(%d,%d) dir=%d ===\n", mx_, my_, (int)mdir_);
             if (!phase2())
             {
                 if (vDebug_)
                     fprintf(stderr, "PHASE2 FAILED\n");
                 return false;
             }
+            if (vTrace_)
+                fprintf(stderr, "=== PHASE 3 START: pose=(%d,%d) dir=%d ===\n", mx_, my_, (int)mdir_);
             if (!phase3())
             {
                 if (vDebug_)
                     fprintf(stderr, "PHASE3 FAILED\n");
                 return false;
             }
+            if (vTrace_)
+                fprintf(stderr, "=== PHASE 4 START: pose=(%d,%d) dir=%d ===\n", mx_, my_, (int)mdir_);
             if (!phase4())
             {
                 if (vDebug_)
@@ -393,6 +401,9 @@ namespace mm
                     int run = 1;
                     while (pi + run + 1 < plan.size() && plan[pi + run].dir == plan[pi + run + 1].dir)
                         ++run;
+                    if (vTrace_)
+                        fprintf(stderr, "MOVE run=%d from=(%d,%d) dir=%d to=(%d,%d)\n", run, mx_, my_, (int)mdir_,
+                                mx_ + static_cast<int>(kDx[mdir_]) * run, my_ + static_cast<int>(kDy[mdir_]) * run);
                     if (!w_.moveForward(run))
                         return RunStatus::kStuck;
                     advanceStats(run);
@@ -407,6 +418,7 @@ namespace mm
                     int rel = (static_cast<int>(b.dir) - static_cast<int>(a.dir) + kDirCount) % kDirCount;
                     while (mdir_ != b.dir)
                     {
+                        Dir oldDir = mdir_;
                         if (rel == 1 || rel == 2)
                         {
                             w_.turnRight();
@@ -418,6 +430,8 @@ namespace mm
                             mdir_ = static_cast<Dir>((mdir_ + 3) % kDirCount);
                         }
                         ++st_.totalTurns;
+                        if (vTrace_)
+                            fprintf(stderr, "TURN from=(%d,%d) old_dir=%d new_dir=%d\n", mx_, my_, (int)oldDir, (int)mdir_);
                         if (runAtStart_)
                             ++curRunTurns_;
                     }
@@ -531,6 +545,9 @@ namespace mm
                 }
                 if (run > 0)
                 {
+                    if (vTrace_)
+                        fprintf(stderr, "MOVE run=%d from=(%d,%d) dir=%d to=(%d,%d)\n", run, mx_, my_, (int)mdir_,
+                                mx_ + kDx[mdir_] * run, my_ + kDy[mdir_] * run);
                     if (!w_.moveForward(run))
                         return RunStatus::kStuck;
                     advanceStats(run);
@@ -546,6 +563,7 @@ namespace mm
                     Dir nd = cur.states[pi + 1].dir;
                     while (mdir_ != nd)
                     {
+                        Dir oldDir = mdir_;
                         int rel = (static_cast<int>(nd) - static_cast<int>(mdir_) + kDirCount) % kDirCount;
                         if (rel == 3)
                         {
@@ -558,6 +576,8 @@ namespace mm
                             mdir_ = static_cast<Dir>((mdir_ + 1) % kDirCount);
                         }
                         ++st_.totalTurns;
+                        if (vTrace_)
+                            fprintf(stderr, "TURN from=(%d,%d) old_dir=%d new_dir=%d\n", mx_, my_, (int)oldDir, (int)mdir_);
                         if (runAtStart_)
                             ++curRunTurns_;
                         acted = true;
@@ -1003,6 +1023,9 @@ namespace mm
                     if (known_.status(mx_, my_, pick) == kUnknown) sense();
                     if (known_.status(mx_, my_, pick) == kWall) break;
                     if (++moves > 1200) { if (clsInOut) *clsInOut = walkCls; return 0; }
+                    if (vTrace_)
+                        fprintf(stderr, "MOVE run=1 from=(%d,%d) dir=%d to=(%d,%d)\n", mx_, my_, (int)pick,
+                                mx_ + static_cast<int>(kDx[pick]), my_ + static_cast<int>(kDy[pick]));
                     if (!w_.moveForward(1)) { if (clsInOut) *clsInOut = walkCls; return 0; }
                     if (known_.status(mx_, my_, pick) != kOpen)
                     {
@@ -1234,6 +1257,9 @@ namespace mm
                 certified_ = route;
                 vizFinal(route);
                 sealed_ = true;
+                if (vTrace_)
+                    fprintf(stderr, "CERTIFIED at pose=(%d,%d) bound=%.3f bestKnown=%.3f\n",
+                            mx_, my_, st_.certBound, st_.certBestKnown);
             };
 
             while (guard++ < 2000)
@@ -1539,6 +1565,7 @@ namespace mm
         {
             while (mdir_ != d)
             {
+                Dir oldDir = mdir_;
                 int rel = (static_cast<int>(d) - static_cast<int>(mdir_) + kDirCount) % kDirCount;
                 if (rel == 1 || rel == 2)
                 {
@@ -1551,6 +1578,8 @@ namespace mm
                     mdir_ = static_cast<Dir>((mdir_ + 3) % kDirCount);
                 }
                 ++st_.totalTurns;
+                if (vTrace_)
+                    fprintf(stderr, "TURN from=(%d,%d) old_dir=%d new_dir=%d\n", mx_, my_, (int)oldDir, (int)mdir_);
                 if (runAtStart_) ++curRunTurns_;
                 if (!sealed_) sense();
             }
@@ -1561,9 +1590,12 @@ namespace mm
             for (int k = 0; k < 4; ++k)
             {
                 if (known_.status(mx_, my_, d) != kUnknown) return;
+                Dir oldDir = mdir_;
                 w_.turnRight();
                 mdir_ = static_cast<Dir>((mdir_ + 1) % kDirCount);
                 ++st_.totalTurns;
+                if (vTrace_)
+                    fprintf(stderr, "TURN from=(%d,%d) old_dir=%d new_dir=%d\n", mx_, my_, (int)oldDir, (int)mdir_);
                 if (runAtStart_) ++curRunTurns_;
                 sense();
             }
