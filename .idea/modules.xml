@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/micromouse_clean.iml" filepath="$PROJECT_DIR$/.idea/micromouse_clean.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/micromouse_algo.iml" filepath="$PROJECT_DIR$/.idea/micromouse_algo.iml" />
     </modules>
   </component>
 </project>

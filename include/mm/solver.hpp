@@ -770,13 +770,6 @@ namespace mm
         int ffLastNSrc_ = -1;
         int ffLastVer_ = -1;
 
-        Cost ffZigKin() const
-        {
-            return cfg_.turnCost > 0
-                ? static_cast<Cost>((static_cast<int64_t>(kFfTurn) * cfg_.zigzagCost) / cfg_.turnCost)
-                : kFfTurn;
-        }
-
         void ffKinPut(int cell, int d, int cls, Cost v)
         {
             int s = (cell * kDirCount + d) * kPrevT + cls;
@@ -829,7 +822,6 @@ namespace mm
                             if (dial) ffRingPush(0, ss);
                             else ffHeapPush(0, ss);
                         }
-            const Cost kinZig = ffZigKin();
             for (;;)
             {
                 int c, d, cls;
@@ -885,9 +877,7 @@ namespace mm
                         if (rel == 1 && cls != kPrevRight) continue;
                         if (rel == 3 && cls != kPrevLeft) continue;
 
-                        const bool zig = cfg_.enableDiagonal && rel != 2 &&
-                            ((rel == 1 && clsP == kPrevLeft) || (rel == 3 && clsP == kPrevRight));
-                        Cost turn = rel == 0 ? 0 : rel == 2 ? kFfUturn : (zig ? kinZig : kFfTurn);
+                        Cost turn = rel == 0 ? 0 : rel == 2 ? kFfUturn : kFfTurn;
                         Cost nk = ek + kFfStraight + turn + curios;
                         if (nk < ffKin_[p][dh][clsP])
                         {
@@ -918,7 +908,6 @@ namespace mm
             const bool useAv = avoid && cfg_.ffAvoid;
             Cost(&kin)[kMAZE][kDirCount][kPrevT] = ffKin_;
             int walkCls = clsInOut && *clsInOut >= 0 ? *clsInOut : kPrevStraight;
-            const Cost kinZig = ffZigKin();
             bool kinValid_ = false;
             int lastFloodVer_ = -1;
             uint32_t h = 2166136261u;
@@ -973,9 +962,7 @@ namespace mm
                         if (onGoal && isGoalTruth(px + kDx[d], py + kDy[d])) continue;
                         if (kin[nc][d][claD] > kinCur || (kin[nc][d][claD] == kinCur && !onGoal)) continue;
 
-                        const bool zigStep = cfg_.enableDiagonal && relStep != 2 &&
-                            ((relStep == 1 && pcl == kPrevLeft) || (relStep == 3 && pcl == kPrevRight));
-                        Cost turnv = relStep == 0 ? 0 : relStep == 2 ? kFfUturn : (zigStep ? kinZig : kFfTurn);
+                        Cost turnv = relStep == 0 ? 0 : relStep == 2 ? kFfUturn : kFfTurn;
                         Cost v = turnv + kFfStraight + kin[nc][d][claD];
                         int rw = cfg_.ffStraight ? (d == pd ? 0 : d == (pd + 2) % kDirCount ? 2 : 1) : 0;
                         int avp = useAv ? gbb(avoid, nc) : 0;
@@ -1144,80 +1131,35 @@ namespace mm
             PhaseHeur ph{HeurKind::kTrueDistance, 1, 1};
 
             Cost hStart[kMAZE];
-            bool deadEnds[kMAZE] = {};
-            int returnSteps = 0;
-            while ((mx_ != 0 || my_ != 0) && returnSteps++ < 1000)
+            Maze curSnap = known_.snapshot();
+            for (int i = 0; i < kMAZE; ++i) hStart[i] = INT32_MAX;
+            hStart[idx(0, 0)] = 0;
+            using QItem = std::pair<Cost, int>;
+            std::priority_queue<QItem, std::vector<QItem>, std::greater<QItem>> pq;
+            pq.push({0, idx(0, 0)});
+            while (!pq.empty())
             {
-                sense();
-                vizVisit();
-                Maze curSnap = known_.snapshot();
-
-                for (int i = 0; i < kMAZE; ++i) hStart[i] = INT32_MAX;
-                hStart[idx(0, 0)] = 0;
-                using QItem = std::pair<Cost, int>;
-                std::priority_queue<QItem, std::vector<QItem>, std::greater<QItem>> pq;
-                pq.push({0, idx(0, 0)});
-                while (!pq.empty())
+                auto [d, c] = pq.top(); pq.pop();
+                if (d > hStart[c]) continue;
+                int cx = c & 0xF, cy = (c >> 4) & 0xF;
+                for (int di = 0; di < 4; ++di)
                 {
-                    auto [d, c] = pq.top(); pq.pop();
-                    if (d > hStart[c]) continue;
-                    int cx = c & 0xF, cy = (c >> 4) & 0xF;
-                    for (int di = 0; di < 4; ++di)
+                    Dir dir = static_cast<Dir>(di);
+                    int nx = cx + kDx[dir], ny = cy + kDy[dir];
+                    if (nx < 0 || ny < 0 || nx >= MAZE_W || ny >= MAZE_H || curSnap.wall(cx, cy, dir)) continue;
+                    int nc = idx(nx, ny);
+                    Cost stepCost = kCostUnit;
+                    if (phase1Vis_[nc]) stepCost += 2 * kCostUnit; // retrace penalty
+                    if (d + stepCost < hStart[nc])
                     {
-                        Dir dir = static_cast<Dir>(di);
-                        int nx = cx + kDx[dir], ny = cy + kDy[dir];
-                        if (nx < 0 || ny < 0 || nx >= MAZE_W || ny >= MAZE_H || curSnap.wall(cx, cy, dir)) continue;
-                        int nc = idx(nx, ny);
-                        Cost stepCost = kCostUnit;
-                        if (phase1Vis_[nc]) stepCost += 2 * kCostUnit; // retrace penalty
-                        if (deadEnds[nc]) stepCost += 100 * kCostUnit;
-                        if (d + stepCost < hStart[nc])
-                        {
-                            hStart[nc] = d + stepCost;
-                            pq.push({hStart[nc], nc});
-                        }
-                    }
-                }
-
-                if (cfg_.enableDiagonal)
-                {
-                    if (mx_ == 15 && my_ < 15 && mdir_ == D_S && !curSnap.wall(15, my_, D_W) && !deadEnds[idx(14, my_)])
-                    {
-                        faceDir(D_W);
-                    }
-                }
-
-                PathResult cur = plan(mx_, my_, mdir_, atStart, curSnap, ph, hStart);
-                if (!cur.found || cur.states.size() <= 1)
-                {
-                    deadEnds[idx(mx_, my_)] = true;
-                    continue;
-                }
-
-                const State& a = cur.states[0];
-                const State& b = cur.states[1];
-                if (a.dir != b.dir)
-                {
-                    faceDir(b.dir);
-                }
-                else
-                {
-                    if (vTrace_)
-                        fprintf(stderr, "MOVE run=1 from=(%d,%d) dir=%d to=(%d,%d)\n", mx_, my_, (int)mdir_,
-                                mx_ + kDx[mdir_], my_ + kDy[mdir_]);
-                    if (w_.moveForward(1))
-                    {
-                        mx_ += kDx[mdir_];
-                        my_ += kDy[mdir_];
-                        advanceStats(1);
-                        onCellVisit();
-                    }
-                    else
-                    {
-                        sense();
+                        hStart[nc] = d + stepCost;
+                        pq.push({hStart[nc], nc});
                     }
                 }
             }
+
+            if (runTo(atStart, ph, hStart) == RunStatus::kStuck)
+                return false;
 
             Maze pes = pessimisticSnapshot();
             PathResult bestP = plan(0, 0, D_N, atCenter, pes, ph);
