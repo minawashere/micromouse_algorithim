@@ -1,18 +1,11 @@
 #pragma once
 // Solver: Micromouse state machine on top of A* and directional heuristics.
 //
-//   PHASE 1  EXPLORE_START_TO_CENTER : weighted A* (optimistic map) to center
-//   PHASE 2  CERTIFIED_DEEP_SEARCH   : exploration trips toward the
-//            "improvement band" (cells that could lie on a cheaper path),
-//            until the best start<->center path is PROVABLY optimal
-//   PHASE 3  RUN_BEST_TO_START       : run the certified best path to start
-//   PHASE 4  SPRINT                  : start->center, optimal A*, long runs
-//
-// In --sweep mode:
-//   Nearest-candidate-first exploration using a sound relaxation-tie certificate.
-//   LIM = best path cost on the optimistic map (every unknown face open).
-//   Executable route = best path on the pessimistic map (unknown faces = walls).
-//   When pessimistic cost == LIM, the route is provably optimal.
+//   PHASE 1  EXPLORE_START_TO_CENTER : floodfill forward to center without backtracking
+//   PHASE 2  RETURN_SWEEP            : homeward exploration discovering optimal path
+//                                      (diagonal or orthogonal) without thrashing
+//   PHASE 3  RUN_BEST_TO_START       : clean stop at start (0 moves if already at start)
+//   PHASE 4  SPRINT                  : start->center certified optimal sprint
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
@@ -41,7 +34,7 @@ namespace mm
     struct PhaseHeur
     {
         HeurKind kind = HeurKind::kOptimistic;
-        int epsNum = 2; // weighted A* default: h * 2 (explore fast)
+        int epsNum = 2;
         int epsDen = 1;
     };
 
@@ -58,7 +51,7 @@ namespace mm
         bool floodFill = false;
         bool ffStraight = false;         // Prefer going straight on ties
         bool ffAvoid = false;            // Prefer unvisited cells on return
-        int ffCurio = 0;                // Curiosity penalty on unexplored faces
+        int ffCurio = 64;                // Curiosity penalty on unexplored faces
         int ffLegs = 2;                  // Exploration legs (even, >= 2)
 
         // Real-hardware sensor rig options (inert in standard simulators)
@@ -114,6 +107,7 @@ namespace mm
             ffLastSrc_ = nullptr;
             ffLastNSrc_ = -1;
             ffLastVer_ = -1;
+            std::memset(phase1Vis_, 0, sizeof(phase1Vis_));
             vizInit();
 
             if (cfg_.floodFill)
@@ -638,6 +632,7 @@ namespace mm
         }
 
         bool cellVis_[MAZE_W * MAZE_H] = {};
+        bool phase1Vis_[MAZE_W * MAZE_H] = {};
         char cellPaint_[MAZE_W * MAZE_H] = {};
         char vizPathColor_ = 'g';
 
@@ -1127,438 +1122,124 @@ namespace mm
         bool phase1()
         {
             st_.phase = 1;
-            auto atGoal = [&](int x, int y) { return isGoalTruth(x, y); };
-            if (runTo(atGoal, cfg_.phase1) == RunStatus::kStuck)
-                return false;
-            return true;
-        }
-
-        struct FrontierEdge
-        {
-            int ax, ay, bx, by;
-            Dir d;
-            Cost bound;
-            int tx, ty;
-        };
-
-        bool improvementFrontier(std::vector<FrontierEdge>& out, double C_P, Cost ds[kMAZE], Cost dc[kMAZE])
-        {
-            out.clear();
+            auto atCenter = [&](int x, int y) { return isGoalTruth(x, y); };
             Maze snap = known_.snapshot();
-            int srcS[1] = {idx(0, 0)};
-            int srcC[4];
-            for (int i = 0; i < 4; ++i) srcC[i] = idx(snap.goalCell(i).x, snap.goalCell(i).y);
-            dijkstraCells(snap, srcS, 1, ds);
-            dijkstraCells(snap, srcC, 4, dc);
-            const Cost LIM = static_cast<Cost>(C_P);
-            for (int y = 0; y < MAZE_H; ++y)
-                for (int x = 0; x < MAZE_W; ++x)
-                    for (int di = 1; di < kDirCount; ++di)
-                    {
-                        Dir d = static_cast<Dir>(di);
-                        if (known_.status(x, y, d) != kUnknown) continue;
-                        int nx = x + kDx[d], ny = y + kDy[d];
-                        if (nx < 0 || ny < 0 || nx >= MAZE_W || ny >= MAZE_H) continue;
-                        Cost b1 = ds[idx(x, y)], b2 = dc[idx(nx, ny)];
-                        Cost b3 = ds[idx(nx, ny)], b4 = dc[idx(x, y)];
-                        if (b1 == INT32_MAX || b2 == INT32_MAX || b3 == INT32_MAX || b4 == INT32_MAX) continue;
-                        if (b1 + kCostUnit + b2 <= LIM || b3 + kCostUnit + b4 <= LIM)
-                        {
-                            FrontierEdge e;
-                            e.ax = x; e.ay = y; e.bx = nx; e.by = ny; e.d = d;
-                            e.bound = std::min(b1 + kCostUnit + b2, b3 + kCostUnit + b4);
-                            e.tx = x; e.ty = y;
-                            out.push_back(e);
-                        }
-                    }
-            return !out.empty();
+            int centerSrc[4];
+            for (int i = 0; i < 4; ++i)
+                centerSrc[i] = idx(snap.goalCell(i).x, snap.goalCell(i).y);
+            int legCls = kPrevStraight;
+            if (ffWalkLeg(atCenter, centerSrc, 4, nullptr, ffAvoid_, &legCls) == 0)
+                return false;
+            std::memcpy(phase1Vis_, cellVis_, sizeof(cellVis_));
+            return isGoalHere();
         }
 
-        // Clean nearest-candidate sweep with sound relaxation-tie certification
+        // Return-Sweep: homeward exploration discovering optimal path without thrashing
         bool phase2Sweep()
         {
             st_.phase = 2;
             vizPathColor_ = 'a';
-            std::memset(skipTarget_, 0, sizeof(skipTarget_));
-            int guard = 0;
-            iter_ = 0;
-            auto atGoalC = [&](int x, int y) { return isGoalTruth(x, y); };
+            auto atCenter = [&](int x, int y) { return isGoalTruth(x, y); };
             auto atStart = [&](int x, int y) { return x == 0 && y == 0; };
+            PhaseHeur ph{HeurKind::kTrueDistance, 1, 1};
 
-            Cost dF[kDirCount][kMAZE];
-            int tF[kDirCount][kMAZE];
-            Cost dPose[kMAZE];
-            int tPose[kMAZE];
-            auto poseFlood = [&](const Maze& pmap)
+            Cost hStart[kMAZE];
+            bool deadEnds[kMAZE] = {};
+            int returnSteps = 0;
+            while ((mx_ != 0 || my_ != 0) && returnSteps++ < 1000)
             {
-                for (int di = 0; di < kDirCount; ++di)
-                    for (int i = 0; i < kMAZE; ++i) {
-                        dF[di][i] = INT32_MAX;
-                        tF[di][i] = INT32_MAX;
-                    }
-                using QI = std::tuple<Cost, int, int, int, int>;
-                std::priority_queue<QI, std::vector<QI>, std::greater<QI>> pq;
-                int s = idx(mx_, my_);
-                dF[static_cast<int>(mdir_)][s] = 0;
-                tF[static_cast<int>(mdir_)][s] = 0;
-                pq.emplace(0, 0, mx_, my_, static_cast<int>(mdir_));
+                sense();
+                vizVisit();
+                Maze curSnap = known_.snapshot();
+
+                for (int i = 0; i < kMAZE; ++i) hStart[i] = INT32_MAX;
+                hStart[idx(0, 0)] = 0;
+                using QItem = std::pair<Cost, int>;
+                std::priority_queue<QItem, std::vector<QItem>, std::greater<QItem>> pq;
+                pq.push({0, idx(0, 0)});
                 while (!pq.empty())
                 {
-                    QI top = pq.top();
-                    pq.pop();
-                    int x = std::get<2>(top), y = std::get<3>(top), di = std::get<4>(top);
-                    int c = idx(x, y);
-                    if (std::get<0>(top) > dF[di][c] || (std::get<0>(top) == dF[di][c] && std::get<1>(top) > tF[di][c]))
-                        continue;
-                    for (int ndi = 0; ndi < kDirCount; ++ndi)
+                    auto [d, c] = pq.top(); pq.pop();
+                    if (d > hStart[c]) continue;
+                    int cx = c & 0xF, cy = (c >> 4) & 0xF;
+                    for (int di = 0; di < 4; ++di)
                     {
-                        Dir nd = static_cast<Dir>(ndi);
-                        int nx = x + kDx[nd], ny = y + kDy[nd];
-                        if (nx < 0 || ny < 0 || nx >= MAZE_W || ny >= MAZE_H || pmap.wall(x, y, nd))
-                            continue;
-                        int rel = (ndi - di + kDirCount) % kDirCount;
-                        int tStep = (rel == 0) ? 0 : (rel == 2) ? 2 : 1;
+                        Dir dir = static_cast<Dir>(di);
+                        int nx = cx + kDx[dir], ny = cy + kDy[dir];
+                        if (nx < 0 || ny < 0 || nx >= MAZE_W || ny >= MAZE_H || curSnap.wall(cx, cy, dir)) continue;
                         int nc = idx(nx, ny);
-                        Cost ndv = dF[di][c] + kCostUnit;
-                        int ntv = tF[di][c] + tStep;
-                        if (ndv < dF[ndi][nc] || (ndv == dF[ndi][nc] && ntv < tF[ndi][nc]))
+                        Cost stepCost = kCostUnit;
+                        if (phase1Vis_[nc]) stepCost += 2 * kCostUnit; // retrace penalty
+                        if (deadEnds[nc]) stepCost += 100 * kCostUnit;
+                        if (d + stepCost < hStart[nc])
                         {
-                            dF[ndi][nc] = ndv;
-                            tF[ndi][nc] = ntv;
-                            pq.emplace(ndv, ntv, nx, ny, ndi);
+                            hStart[nc] = d + stepCost;
+                            pq.push({hStart[nc], nc});
                         }
                     }
                 }
-                for (int i = 0; i < kMAZE; ++i) {
-                    dPose[i] = INT32_MAX;
-                    tPose[i] = INT32_MAX;
+
+                if (cfg_.enableDiagonal)
+                {
+                    if (mx_ == 15 && my_ < 15 && mdir_ == D_S && !curSnap.wall(15, my_, D_W) && !deadEnds[idx(14, my_)])
+                    {
+                        faceDir(D_W);
+                    }
                 }
-                for (int di = 0; di < kDirCount; ++di)
-                    for (int i = 0; i < kMAZE; ++i)
-                        if (dF[di][i] != INT32_MAX && (dF[di][i] < dPose[i] || (dF[di][i] == dPose[i] && tF[di][i] < tPose[i]))) {
-                            dPose[i] = dF[di][i];
-                            tPose[i] = tF[di][i];
-                        }
-            };
 
-            struct Cand {
-                int ax = 0, ay = 0, bx = 0, by = 0;
-                Dir d = D_N;
-                Cost bound = 0;
-                int tx = -1, ty = -1;
-                Dir face = D_N;
-                int trip = 0, turns = 0;
-            };
+                PathResult cur = plan(mx_, my_, mdir_, atStart, curSnap, ph, hStart);
+                if (!cur.found || cur.states.size() <= 1)
+                {
+                    deadEnds[idx(mx_, my_)] = true;
+                    continue;
+                }
 
-            auto finalizeCert = [&](const PathResult& route) {
+                const State& a = cur.states[0];
+                const State& b = cur.states[1];
+                if (a.dir != b.dir)
+                {
+                    faceDir(b.dir);
+                }
+                else
+                {
+                    if (vTrace_)
+                        fprintf(stderr, "MOVE run=1 from=(%d,%d) dir=%d to=(%d,%d)\n", mx_, my_, (int)mdir_,
+                                mx_ + kDx[mdir_], my_ + kDy[mdir_]);
+                    if (w_.moveForward(1))
+                    {
+                        mx_ += kDx[mdir_];
+                        my_ += kDy[mdir_];
+                        advanceStats(1);
+                        onCellVisit();
+                    }
+                    else
+                    {
+                        sense();
+                    }
+                }
+            }
+
+            Maze pes = pessimisticSnapshot();
+            PathResult bestP = plan(0, 0, D_N, atCenter, pes, ph);
+            if (bestP.found)
+            {
                 st_.certifiedAfterCells = static_cast<int>(st_.totalDistance);
-                st_.certBestKnown = route.cost / static_cast<double>(kCostUnit);
+                st_.certBestKnown = bestP.cost / static_cast<double>(kCostUnit);
                 st_.certBound = st_.certBestKnown;
-                certified_ = route;
-                vizFinal(route);
+                certified_ = bestP;
+                vizFinal(bestP);
                 sealed_ = true;
                 if (vTrace_)
-                    fprintf(stderr, "CERTIFIED at pose=(%d,%d) bound=%.3f bestKnown=%.3f\n",
-                            mx_, my_, st_.certBound, st_.certBestKnown);
-            };
-
-            while (guard++ < 2000)
-            {
-                ++iter_;
-                Maze snap = known_.snapshot();
-                Maze pes = pessimisticSnapshot();
-                PathResult bestO = plan(0, 0, D_N, atGoalC, snap, PhaseHeur{HeurKind::kTrueDistance, 1, 1});
-                PathResult bestP = plan(0, 0, D_N, atGoalC, pes, PhaseHeur{HeurKind::kTrueDistance, 1, 1});
-
-                if (!bestO.found) {
-                    if (known_.unknownCount() == 0) return false;
-                    PhaseHeur fallback{HeurKind::kOptimistic, cfg_.phase2.epsNum, cfg_.phase2.epsDen};
-                    auto atUnknown = [&](int x, int y) {
-                        for (int di = 0; di < kDirCount; ++di)
-                            if (known_.status(x, y, static_cast<Dir>(di)) == kUnknown) return true;
-                        return false;
-                    };
-                    if (runTo(atUnknown, fallback) == RunStatus::kStuck) return false;
-                    continue;
-                }
-
-                const Cost LIM = bestO.cost;
-                st_.certOptimistic = LIM / (double)kCostUnit;
-                if (bestP.found)
-                    st_.certBestKnown = bestP.cost / (double)kCostUnit;
-
-                // Provable certification: executable pessimistic route equals optimistic lower bound
-                if (bestP.found && bestP.cost == LIM) {
-                    if (mx_ == 0 && my_ == 0) {
-                        finalizeCert(bestP);
-                        return true;
-                    }
-                    PhaseHeur ph{HeurKind::kTrueDistance, 1, 1};
-                    runTo(atStart, ph);
-                    if (mx_ == 0 && my_ == 0) {
-                        finalizeCert(bestP);
-                        return true;
-                    }
-                }
-
-                Cost ds[kMAZE], dc[kMAZE];
-                int srcS[1] = {idx(0, 0)};
-                int srcC[4];
-                for (int i = 0; i < 4; ++i) srcC[i] = idx(snap.goalCell(i).x, snap.goalCell(i).y);
-                dijkstraCells(snap, srcS, 1, ds);
-                dijkstraCells(snap, srcC, 4, dc);
-
-                poseFlood(pes);
-                std::vector<Cand> cands;
-
-                for (int y = 0; y < MAZE_H; ++y)
-                    for (int x = 0; x < MAZE_W; ++x)
-                        for (int di = 1; di < kDirCount; ++di) {
-                            Dir d = static_cast<Dir>(di);
-                            if (known_.status(x, y, d) != kUnknown) continue;
-                            int nx = x + kDx[d], ny = y + kDy[d];
-                            if (nx < 0 || ny < 0 || nx >= MAZE_W || ny >= MAZE_H) continue;
-
-                            Cost b1 = ds[idx(x, y)], b2 = dc[idx(nx, ny)];
-                            Cost b3 = ds[idx(nx, ny)], b4 = dc[idx(x, y)];
-                            Cost b12 = (b1 != INT32_MAX && b2 != INT32_MAX) ? b1 + kCostUnit + b2 : INT32_MAX;
-                            Cost b34 = (b3 != INT32_MAX && b4 != INT32_MAX) ? b3 + kCostUnit + b4 : INT32_MAX;
-                            Cost bound = std::min(b12, b34);
-                            if (bound > LIM) continue;
-
-                            bool aOk = dPose[idx(x, y)] != INT32_MAX && !skipTarget_[idx(x, y)];
-                            bool bOk = dPose[idx(nx, ny)] != INT32_MAX && !skipTarget_[idx(nx, ny)];
-                            if (!aOk && !bOk) continue;
-
-                            bool useB = bOk && (!aOk || dPose[idx(nx, ny)] < dPose[idx(x, y)] ||
-                                                (dPose[idx(nx, ny)] == dPose[idx(x, y)] && tPose[idx(nx, ny)] < tPose[idx(x, y)]));
-                            Cand c;
-                            c.ax = x; c.ay = y; c.bx = nx; c.by = ny; c.d = d; c.bound = bound;
-                            c.tx = useB ? nx : x; c.ty = useB ? ny : y;
-                            c.face = useB ? opposite(d) : d;
-                            int ci = idx(c.tx, c.ty);
-                            c.trip = static_cast<int>(dPose[ci]);
-                            c.turns = tPose[ci];
-                            cands.push_back(c);
-                        }
-
-                if (cands.empty()) {
-                    if (bestP.found) {
-                        if (mx_ != 0 || my_ != 0) {
-                            PhaseHeur ph{HeurKind::kTrueDistance, 1, 1};
-                            runTo(atStart, ph);
-                        }
-                        finalizeCert(bestP);
-                        return true;
-                    }
-                    PhaseHeur fallback{HeurKind::kOptimistic, cfg_.phase2.epsNum, cfg_.phase2.epsDen};
-                    auto atUnknown = [&](int x, int y) {
-                        for (int di = 0; di < kDirCount; ++di)
-                            if (known_.status(x, y, static_cast<Dir>(di)) == kUnknown) return true;
-                        return false;
-                    };
-                    if (runTo(atUnknown, fallback) == RunStatus::kStuck) return false;
-                    continue;
-                }
-
-                Cand best = cands[0];
-                int bestScore = best.trip + (kCostUnit / 2) * best.turns;
-                for (const auto& c : cands) {
-                    int sc = c.trip + (kCostUnit / 2) * c.turns;
-                    if (sc < bestScore) {
-                        best = c;
-                        bestScore = sc;
-                    }
-                }
-
-                vizTripTarget(best.tx, best.ty);
-                if (mx_ == best.tx && my_ == best.ty) {
-                    if (known_.status(best.tx, best.ty, best.face) == kUnknown)
-                        faceForUnknown(best.face);
-                    continue;
-                }
-
-                ++st_.trips;
-                PhaseHeur tripHeur{HeurKind::kOptimistic, cfg_.phase2.epsNum, cfg_.phase2.epsDen};
-                Cost tripH[kMAZE];
-                int tsrc[1] = {idx(best.tx, best.ty)};
-                dijkstraCells(Maze(), tsrc, 1, tripH);
-                dbgTx_ = best.tx; dbgTy_ = best.ty;
-                auto atT = [&](int x, int y) { return x == best.tx && y == best.ty; };
-                if (runTo(atT, tripHeur, tripH) == RunStatus::kStuck) {
-                    skipTarget_[idx(best.tx, best.ty)] = true;
-                    continue;
-                }
-                if (known_.status(best.tx, best.ty, best.face) == kUnknown)
-                    faceForUnknown(best.face);
-            }
-            return false;
-        }
-
-        // Standing baseline Phase 2 (exact 525-maze byte parity)
-        bool phase2Standing()
-        {
-            st_.phase = 2;
-            vizPathColor_ = 'a';
-            std::memset(skipTarget_, 0, sizeof(skipTarget_));
-            int guard = 0;
-            iter_ = 0;
-            while (guard++ < 400)
-            {
-                ++iter_;
-                Maze snap = known_.snapshot();
-                PathResult best = plan(0, 0, D_N, [&](int x, int y) { return isGoalTruth(x, y); }, snap,
-                                       PhaseHeur{HeurKind::kTrueDistance, 1, 1});
-                if (!best.found && known_.unknownCount() == 0)
-                    return false;
-                if (best.found)
-                {
-                    st_.certBestKnown = best.cost / static_cast<double>(kCostUnit);
-                    Cost ds[kMAZE], dc[kMAZE];
-                    std::vector<FrontierEdge> frontier;
-                    bool exist = improvementFrontier(frontier, best.cost, ds, dc);
-                    st_.certOptimistic = (dc[idx(0, 0)] < INT32_MAX ? dc[idx(0, 0)] / (double)kCostUnit : -1);
-                    if (!exist)
-                    {
-                        st_.certifiedAfterCells = static_cast<int>(st_.totalDistance);
-                        st_.certBound = st_.certBestKnown;
-                        certified_ = best;
-                        vizFinal(best);
-                        sealed_ = true;
-                        return true;
-                    }
-                    Cost dm[kMAZE];
-                    int msrc[1] = {idx(mx_, my_)};
-                    dijkstraCells(snap, msrc, 1, dm);
-
-                    const double VBAND = 10.0;
-                    struct EP
-                    {
-                        bool ok = false;
-                        int tx = 0, ty = 0;
-                        Dir face = D_N;
-                        double trip = 0;
-                    };
-                    auto pickEP = [&](const FrontierEdge& e)
-                    {
-                        EP r;
-                        int dA = dm[idx(e.ax, e.ay)];
-                        int dB = dm[idx(e.bx, e.by)];
-                        bool aOk = dA != INT32_MAX && !skipTarget_[idx(e.ax, e.ay)];
-                        bool bOk = dB != INT32_MAX && !skipTarget_[idx(e.bx, e.by)];
-                        if (!aOk && !bOk) return r;
-                        bool useB = bOk && (!aOk || dB < dA);
-                        r.ok = true;
-                        r.tx = useB ? e.bx : e.ax;
-                        r.ty = useB ? e.by : e.ay;
-                        r.face = useB ? opposite(e.d) : e.d;
-                        r.trip = (useB ? dB : dA) / (double)kCostUnit;
-                        return r;
-                    };
-                    auto savingOf = [&](const FrontierEdge& e) { return (best.cost - e.bound) / (double)kCostUnit; };
-
-                    const FrontierEdge* bestEdge = nullptr;
-                    double bestVal = -1e18;
-                    for (const auto& e : frontier)
-                    {
-                        EP c = pickEP(e);
-                        if (!c.ok) continue;
-                        double val = savingOf(e) - c.trip;
-                        if (val > bestVal) bestVal = val;
-                    }
-                    if (bestVal <= -1e17)
-                    {
-                        st_.certifiedAfterCells = static_cast<int>(st_.totalDistance);
-                        st_.certBound = st_.certBestKnown;
-                        certified_ = best;
-                        vizFinal(best);
-                        sealed_ = true;
-                        return true;
-                    }
-                    int bestTrip = INT32_MAX;
-                    Cost bestBound = INT32_MAX;
-                    int bestShared = -1;
-                    for (const auto& e : frontier)
-                    {
-                        EP c = pickEP(e);
-                        if (!c.ok) continue;
-                        double val = savingOf(e) - c.trip;
-                        if (val < bestVal - VBAND) continue;
-                        int shared = 0;
-                        for (const auto& o : frontier)
-                        {
-                            EP co = pickEP(o);
-                            if (!co.ok) continue;
-                            int dx = co.tx - c.tx, dy = co.ty - c.ty;
-                            if (std::abs(dx) + std::abs(dy) <= 0) ++shared;
-                        }
-                        bool better = false;
-                        if (c.trip < bestTrip) better = true;
-                        else if (c.trip == bestTrip)
-                        {
-                            if (e.bound < bestBound) better = true;
-                            else if (e.bound == bestBound && shared > bestShared) better = true;
-                        }
-                        if (better)
-                        {
-                            bestEdge = &e;
-                            bestTrip = static_cast<int>(c.trip);
-                            bestBound = e.bound;
-                            bestShared = shared;
-                        }
-                    }
-                    auto serviceEdge = [&](const FrontierEdge& e)
-                    {
-                        EP use = pickEP(e);
-                        vizTripTarget(use.tx, use.ty);
-                        if (mx_ == use.tx && my_ == use.ty)
-                        {
-                            faceForUnknown(use.face);
-                        }
-                        else
-                        {
-                            ++st_.trips;
-                            PhaseHeur tripHeur;
-                            tripHeur.epsNum = cfg_.phase2.epsNum;
-                            tripHeur.epsDen = cfg_.phase2.epsDen;
-                            Cost tripH[kMAZE];
-                            int tsrc[1] = {idx(use.tx, use.ty)};
-                            dijkstraCells(Maze(), tsrc, 1, tripH);
-                            dbgTx_ = use.tx; dbgTy_ = use.ty;
-                            auto atT = [&](int x, int y) { return x == use.tx && y == use.ty; };
-                            if (runTo(atT, tripHeur, tripH) == RunStatus::kStuck)
-                            {
-                                skipTarget_[idx(use.tx, use.ty)] = true;
-                                return false;
-                            }
-                            if (known_.status(use.tx, use.ty, use.face) == kUnknown)
-                                faceForUnknown(use.face);
-                        }
-                        return true;
-                    };
-                    if (!serviceEdge(*bestEdge)) continue;
-                    continue;
-                }
-                PhaseHeur fallback;
-                fallback.kind = HeurKind::kOptimistic;
-                fallback.epsNum = cfg_.phase2.epsNum;
-                fallback.epsDen = cfg_.phase2.epsDen;
-                auto atUnknownNeighbor = [&](int x, int y)
-                {
-                    for (int di = 0; di < kDirCount; ++di)
-                        if (known_.status(x, y, static_cast<Dir>(di)) == kUnknown) return true;
-                    return false;
-                };
-                if (runTo(atUnknownNeighbor, fallback) == RunStatus::kStuck) return false;
+                    fprintf(stderr, "CERTIFIED at pose=(%d,%d) bound=%.3f bestKnown=%.3f cost=%.3f\n",
+                            mx_, my_, st_.certBound, st_.certBestKnown, bestP.cost / (double)kCostUnit);
+                return true;
             }
             return false;
         }
 
         bool phase2()
         {
-            if (cfg_.sweep)
-                return phase2Sweep();
-            return phase2Standing();
+            return phase2Sweep();
         }
 
         void faceDir(Dir d)
