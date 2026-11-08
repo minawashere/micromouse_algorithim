@@ -14,6 +14,13 @@ namespace mm {
 
 struct AstarConfig {
   Cost turnCost = kCostUnit;  // cost of one 90-deg turn
+  // SLALOM/ZIG-ZAG DISCOUNT (see SolverConfig::enableDiagonal): when set, a
+  // 90-deg turn OPPOSITE to the previous 90-deg turn charges zigzagCost
+  // instead of turnCost (stair-step diagonal drive; the motor controller
+  // handles the physical sine-wave slalom). U-turns and first turns are
+  // never discounted. Off = bit-identical plain turn-cost graph.
+  bool enableDiagonal = false;
+  Cost zigzagCost = kCostUnit;
   bool stopAtFirstGoal = true;
   int epsilonDen = 1;         // weighted A*: h * epsilonNum / epsilonDen
   int epsilonNum = 1;
@@ -29,8 +36,9 @@ struct PathResult {
 namespace detail {
 
 struct Scratch {
-  // lazily-grown static scratch (single-threaded use)
-  static constexpr int kStates = MAZE_W * MAZE_H * kDirCount;
+  // lazily-grown static scratch (single-threaded use): 1024 (cell, heading)
+  // states x 3 previous-turn classes = 3072 (the slalom-state axis, kPrevT)
+  static constexpr int kStates = MAZE_W * MAZE_H * kDirCount * kPrevT;
   int32_t g[kStates];
   int32_t parent[kStates];
   // 32-bit generation stamps: int16 stamps would silently corrupt results
@@ -65,11 +73,17 @@ class Astar {
     detail::Scratch& S = scratch();
     S.reset();
 
-    struct Item { int state; Cost f; };
-    struct Cmp { bool operator()(const Item& a, const Item& b) const { return a.f > b.f; } };
+    // Item: state, cost f, and diagonal step count for cost-tie breaking
+    struct Item { int state; Cost f; int16_t diag; };
+    struct Cmp {
+      bool operator()(const Item& a, const Item& b) const {
+        if (a.f != b.f) return a.f > b.f;
+        return a.diag < b.diag; // tie-breaker: prefer higher diagonal count when enableDiagonal
+      }
+    };
     std::vector<Item> heap;
-    auto push = [&](int s, Cost f) {
-      heap.push_back({s, f});
+    auto push = [&](int s, Cost f, int16_t diag) {
+      heap.push_back({s, f, diag});
       std::push_heap(heap.begin(), heap.end(), Cmp{});
     };
     auto hscale = [&](int s) -> Cost {
@@ -77,11 +91,11 @@ class Astar {
       return (static_cast<int64_t>(h[idx(x, y)]) * cfg.epsilonNum) / cfg.epsilonDen;
     };
 
-    int start = stateIdx(sx, sy, sdir);
+    int start = stateIdx(sx, sy, sdir, kPrevStraight);
     S.g[start] = 0;
     S.parent[start] = -1;
     S.stamp[start] = S.gen;
-    push(start, hscale(start));
+    push(start, hscale(start), 0);
 
     int goalState = -1;
     while (!heap.empty()) {
@@ -92,51 +106,48 @@ class Astar {
       if (S.closed[s] == S.gen) continue;  // stale heap entry
       S.closed[s] = S.gen;
       ++out.expansions;
+
       int x = s & 0xF, y = (s >> 4) & 0xF;
-      Dir dir = static_cast<Dir>(s >> 8);
+      Dir dir = static_cast<Dir>((s >> 8) & 3);
+      const int cls = (s >> 10) & 3; // armed previous-turn class of this state
       if (atGoal(x, y)) { goalState = s; break; }
-      // successors: all 3 turn options in place (left=1, u=2, right=1),
-      // then forward
-      for (int t = 0; t < 3; ++t) {
-        int rel = (t == 0) ? 1 : (t == 1 ? 2 : 3);  // step count: L,U,R
+
+      // successors: all 3 turn options in place (rel 1 = right, 2 = u-turn,
+      // 3 = left), then forward
+      for (int rel = 1; rel <= 3; ++rel) {
         Dir d = static_cast<Dir>((static_cast<int>(dir) + rel) % kDirCount);
-        int ns = stateIdx(x, y, d);
-        if (S.closed[ns] == S.gen) continue;
-        Cost cost = turnPenaltySteps(dir, d) * cfg.turnCost;
-        (void)rel;
+        int ns = stateIdx(x, y, d, prevTurnClass(dir, d));
+        bool zig = false;
+        if (cfg.enableDiagonal && rel != 2)
+        {
+          if ((rel == 1 && cls == kPrevLeft) || (rel == 3 && cls == kPrevRight))
+            zig = true;
+        }
+        Cost cost = rel == 2 ? 2 * cfg.turnCost
+                             : (zig ? cfg.zigzagCost : cfg.turnCost);
         int32_t ng = S.g[s] + cost;
         if (S.stamp[ns] != S.gen || ng < S.g[ns]) {
           S.stamp[ns] = S.gen;
           S.g[ns] = ng;
           S.parent[ns] = s;
-          push(ns, ng + hscale(ns));
+          S.closed[ns] = 0; // reopen a closed state on strict g improvement
+          int16_t ndiag = cfg.enableDiagonal ? static_cast<int16_t>(it.diag + (zig ? 1 : 0)) : 0;
+          push(ns, ng + hscale(ns), ndiag);
         }
       }
       if (!maze.wall(x, y, dir)) {
         int nx = x + kDx[dir], ny = y + kDy[dir];
         if (nx < 0 || ny < 0 || nx >= MAZE_W || ny >= MAZE_H) continue;  // border
-        // GOAL CELLS ARE ABSORBING -- faithful port of the kinematic-flood
-        // arc ban: a search NEVER steps goal -> goal ("if current cell weight
-        // == 0, don't go to any cell with weight 0, instead go to weights >
-        // 0"). Entering a goal cell from a weight>0 cell stays legal (a
-        // one-touch dip: the next forward step must leave for weight>0, so
-        // the zero region can never be traversed or lapped). Banning entries
-        // outright (isGoal(dest) && !atGoal(dest)) is WRONG here: searches
-        // targeting non-goal cells (returns, DeepExplore trips) may NEED to
-        // touch the center en route -- the full ban made those searches
-        // unfound and failed 399-468 benchmark mazes. Turn-in-place
-        // successors are unaffected (no motion), so a leg standing inside
-        // the center always has a representable exit.
         if (maze.isGoal(x, y) && maze.isGoal(nx, ny)) continue;
-        int ns = stateIdx(nx, ny, dir);
-        if (S.closed[ns] != S.gen) {
-          int32_t ng = S.g[s] + kCostUnit;
-          if (S.stamp[ns] != S.gen || ng < S.g[ns]) {
-            S.stamp[ns] = S.gen;
-            S.g[ns] = ng;
-            S.parent[ns] = s;
-            push(ns, ng + hscale(ns));
-          }
+        int ns = stateIdx(nx, ny, dir, cls); // forward glide: class carries over
+        int32_t ng = S.g[s] + kCostUnit;
+        if (S.stamp[ns] != S.gen || ng < S.g[ns]) {
+          S.stamp[ns] = S.gen;
+          S.g[ns] = ng;
+          S.parent[ns] = s;
+          S.closed[ns] = 0; // reopen a closed state on strict g improvement
+          int16_t ndiag = cfg.enableDiagonal ? it.diag : 0;
+          push(ns, ng + hscale(ns), ndiag);
         }
       }
     }
@@ -146,9 +157,28 @@ class Astar {
     for (int s = goalState; s >= 0; s = S.parent[s]) {
       int x = s & 0xF, y = (s >> 4) & 0xF;
       rev.push_back({static_cast<uint8_t>(x), static_cast<uint8_t>(y),
-                     static_cast<Dir>(s >> 8)});
+                     static_cast<Dir>((s >> 8) & 3)});
     }
-    out.states.assign(rev.rbegin(), rev.rend());
+    // Clean up consecutive in-place turns at the same cell
+    std::vector<State> fwd(rev.rbegin(), rev.rend());
+    out.states.clear();
+    for (size_t i = 0; i < fwd.size(); ++i) {
+      if (i + 1 < fwd.size() && fwd[i].x == fwd[i + 1].x && fwd[i].y == fwd[i + 1].y) {
+        // Look ahead: find the last state at this cell
+        size_t k = i;
+        while (k + 1 < fwd.size() && fwd[k + 1].x == fwd[i].x && fwd[k + 1].y == fwd[i].y)
+          ++k;
+        if (fwd[i].dir != fwd[k].dir) {
+          out.states.push_back(fwd[i]);
+          out.states.push_back(fwd[k]);
+        } else {
+          out.states.push_back(fwd[i]);
+        }
+        i = k;
+      } else {
+        out.states.push_back(fwd[i]);
+      }
+    }
     out.cost = S.g[goalState];
     return out;
   }

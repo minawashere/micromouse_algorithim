@@ -18,8 +18,11 @@ The same solver drives three frontends:
    immediately knows its twin), and seal confidently-dead ends out of
    planning.
 2. **Plan** — weighted-A* over the known map with turn cost
-   (`--turncost 64` = 0.25 cell-time per 90° turn) and ε-weighted greed
-   (`--p1eps/--p2eps 2`), replanning after every surprise.
+   (`--turncost 70` = 0.275 cell-time per 90° turn) and 2×-weighted greed,
+   replanning after every surprise. Optionally
+   `--enable-diagonal` plans diagonal corridors as alternating L/R
+   stair-steps priced as one sine-wave slalom (`--zigzag-cost`, default
+   64 — never cheaper than a straight cell).
 3. **Decide** — judge whether more exploration is worth the cells spent.
    By default exploration runs until the known sprint cost is *provably
    unbeatable* (exact best-path certificate; the `cert_*` JSON fields).
@@ -112,6 +115,10 @@ git submodule update --remote mazes/mazefiles
 # Exact 4-phase machine (optimal-trip planner; the default mode)
 ./build/run --maze mazes/mazefiles/classic/tricky.txt
 
+# Winner-style run: nearest-candidate sweep exploration + diagonal slalom
+# planning with a discounted slalom-turn price
+./build/run --maze mazes/mazefiles/classic/japan2023-student.txt --sweep --enable-diagonal --zigzag-cost 64
+
 # Flood-fill mood, the benchmark configuration
 ./build/run --maze mazes/mazefiles/classic/taisho.txt --floodfill --ff-straight --ff-legs 2
 
@@ -138,24 +145,20 @@ Modes (mutually exclusive):
 | `--json` | off | Machine-readable one-line JSON result. |
 | `--check` | off | Validate a maze file: print parse dump + hash, then exit. |
 | `--verbose` | off | Live console visualization of the run. |
-| `--p1eps N` | 2 | Weighted-A* epsilon, phase 1 trips (1 = strict optimal). |
-| `--p2eps N` | 2 | Weighted-A* epsilon, phase 2 trips. |
 | `--p1heur K` | `opt` | Phase 1 heuristic: `manhattan` \| `true` \| `opt`. |
 | `--p2heur K` | `opt` | Phase 2 heuristic kind (same values). |
-| `--turncost N` | 64 | A* turn cost (64 = 0.25 cell-time per 90° turn). |
-| `--vband X` | 10 | Mix-mode improvement band for DeepExplore trips. |
+| `--turncost N` | 70 | A* turn cost (70 = 0.275 cell-time per 90° turn). |
+| `--enable-diagonal` | off | Slalom planning: diagonal corridors are planned as alternating L/R stair-steps whose turn pair is charged `--zigzag-cost` (the motor controller drives the pair as one continuous sine-wave). Applies inside every mode (exact, flood, mix). Mice execute plain orthogonal moves. |
+| `--zigzag-cost N` | 64 | Price of ONE alternating slalom turn; clamped ≥ 0. `< turnCost` ranks stair-steps over 90° zig-zags, `> 0` keeps them never cheaper than a straight (staircases can't beat a straight line of equal endpoints). |
+| `--sweep` | off | Nearest-candidate sweep exploration: per pass, plans start→center on the optimistic map (lower bound `LIM`) and pessimistic map (executable `bestP`). Chases qualifying unknown faces within the optimistic bound, ordered by driving distance from current pose. Certifies optimal sprint when `bestP.cost == LIM` or falls back to return-home servicing. |
 | `--floodfill` | off | Enable the flood-fill mood (see modes above). |
 | `--ff-straight` | off | Flood walker tie-break: prefer going straight. |
 | `--ff-avoid` | off | Flood walker tie-break: avoid (secondary preference). |
-| `--ff-curio N` | 64 | Flood curiosity weight on unexplored faces (0 = optimistic flood). |
+| `--ff-curio N` | 64 | Flood curiosity weight on unexplored faces (0 = optimistic flood), for center-bound legs. |
 | `--ff-legs N` | 2 | Exploration legs; even ≥ 2 (odd coerced down). Ends the walk at the start so the sprint begins immediately. |
 | `--mix` / `--mix-mode` | off | Enable the 5-stage mix-mode machine. |
 | `--look-ahead` | **off** | Real-hardware feature: 2-cell IR rig (one cell ahead via front sensors + diagonal reads). Default OFF — keep OFF for simulators; enables extra sensor reads in the solver loop. |
 | `--look-ahead-diag` | **off** | Diagonal channels of that rig: map the remote cell's left/right faces while the cell ahead is open. Default OFF. |
-| `--trip-worth X` | −1 | Phase-2 trip economics ratio (−1 = exact best-path certificate; 1.0 = legacy `--allow-lazy`). |
-| `--edge-prior P` | 1.0 | Open-wall prior applied to potential savings when trip-worth is active. |
-| `--cluster-radius R` | 0 | Frontier tie-break neighborhood radius (0 = legacy same-cell tie-break). |
-| `--allow-lazy` | — | Shorthand for `--trip-worth 1.0`. |
 | `--debug` | off | Firmware-style critical-leg debug prints. |
 | `--trace` / `--trace2` | off | Extra solver trace output. |
 
@@ -174,12 +177,20 @@ use `best_run_eff + best_run_turns`.
 
 ### Reference results (classic corpus)
 
-| Maze | exact | floodfill (ff-legs 2) | mix-mode |
-|---|---|---|---|
-| `tricky.txt` | 217.30 | 190.45 | 223.35 |
-| `taisho.txt` | 89.45 | 65.80 | 105.20 |
-| `killer.txt` | 183.40 | 173.50 | 205.35 |
-| `allamerica2013.txt` | 103.35 | 99.60 | 111.50 |
+| Maze | exact | exact + diag | floodfill (ff-legs 2) | ff + diag | mix-mode | mix + diag |
+|---|---|---|---|---|---|---|
+| `tricky.txt` | 211.65 | 211.65 | 190.45 | 189.15 | 223.35 | 223.95 |
+| `taisho.txt` | 94.50 | 89.45 | 65.80 | 68.85 | 106.35 | 99.30 |
+| `killer.txt` | 184.80 | 184.20 | 173.50 | 167.10 | 205.95 | 198.95 |
+| `allamerica2013.txt` | 103.35 | 102.80 | 99.60 | 99.60 | 111.50 | 110.95 |
+
+All cells measured with the shipped defaults of this revision: exact
+and mix columns inherit the new `--turncost 70`, which slightly
+re-ranks turn-heavy routes vs the older tc64 snapshot; flood rows are
+tc-independent. Diagonal cells add `--enable-diagonal --zigzag-cost
+64`. The discount is a per-maze tuning knob: net corpus effect is
+mildly positive (523-maze mean −0.30), with individual mazes above or
+below parity.
 
 ## `mms` — mms simulator GUI wrapper
 

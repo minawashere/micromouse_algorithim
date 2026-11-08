@@ -39,12 +39,30 @@ inline constexpr int turnPenaltySteps(Dir from, Dir to) {
   return (d == 3) ? 1 : d;  // U-turn = 2 steps (two turns); left = 1, right = 1
 }
 
+// SLALOM/ZIG-ZAG previous-turn classes (the extra state axis of both the A*
+// planner and the directional kinematic flood, --enable-diagonal): which side
+// the most recent 90-deg turn was turned toward. Straight moves preserve the
+// class; a U-turn resets it (two 90s spun in one maneuver is never a
+// discountable alternation).
+constexpr int kPrevT = 3;
+constexpr int kPrevStraight = 0, kPrevLeft = 1, kPrevRight = 2;
+
+// Classification of ONE in-place turn from heading `from` to heading `to`:
+// kPrevRight (clockwise: N->E), kPrevLeft (counterclockwise: N->W), or
+// kPrevStraight (no turn, or a U-turn resetting the history).
+inline constexpr int prevTurnClass(Dir from, Dir to) {
+  int rel = static_cast<int>(to) - static_cast<int>(from);
+  rel = ((rel % 4) + 4) % 4;
+  return rel == 1 ? kPrevRight : rel == 3 ? kPrevLeft : kPrevStraight;
+}
+
 struct State {  // position + heading: the node type of the search graph
   uint8_t x = 0, y = 0;
   Dir dir = D_N;
 };
-inline constexpr int stateIdx(int x, int y, Dir dir) {
-  return (static_cast<int>(dir) << 8) | (y << 4) | x;
+// search state = x | y<<4 | dir<<8 | prev-turn class<<10 (see kPrevT above)
+inline constexpr int stateIdx(int x, int y, Dir dir, int prevT) {
+  return ((prevT & 3) << 10) | (static_cast<int>(dir) << 8) | (y << 4) | x;
 }
 
 struct Cell { int x, y; };
