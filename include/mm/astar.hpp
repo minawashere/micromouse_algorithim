@@ -74,13 +74,25 @@ class Astar {
     S.reset();
 
     // Item: state, cost f, and diagonal step count for cost-tie breaking
-    struct Item { int state; Cost f; int16_t diag; };
-    struct Cmp {
-      bool operator()(const Item& a, const Item& b) const {
-        if (a.f != b.f) return a.f > b.f;
-        return a.diag < b.diag; // tie-breaker: prefer higher diagonal count when enableDiagonal
-      }
-    };
+      struct Item { int state; Cost f; int16_t diag; };
+      struct Cmp {
+          bool operator()(const Item& a, const Item& b) const {
+              if (a.f != b.f) return a.f > b.f;
+              if (a.diag != b.diag) return a.diag < b.diag;
+              int ya = (a.state >> 4) & 0xF;
+              int yb = (b.state >> 4) & 0xF;
+              if (ya != yb) return ya > yb;
+              int da = (a.state >> 8) & 3;
+              int db = (b.state >> 8) & 3;
+              auto dirScore = [](int d) {
+                  if (d == 2) return 3; // D_S towards (0,0)
+                  if (d == 3) return 2; // D_W towards (0,0)
+                  if (d == 1) return 1; // D_E
+                  return 0;             // D_N away from (0,0)
+              };
+              return dirScore(da) < dirScore(db);
+          }
+      };
     std::vector<Item> heap;
     auto push = [&](int s, Cost f, int16_t diag) {
       heap.push_back({s, f, diag});

@@ -1148,12 +1148,35 @@ namespace mm
                     int nx = cx + kDx[dir], ny = cy + kDy[dir];
                     if (nx < 0 || ny < 0 || nx >= MAZE_W || ny >= MAZE_H || curSnap.wall(cx, cy, dir)) continue;
                     int nc = idx(nx, ny);
-                    Cost stepCost = kCostUnit;
-                    if (phase1Vis_[nc]) stepCost += 2 * kCostUnit; // retrace penalty
+                    Cost stepCost = (ny == 0) ? (kCostUnit - 1) : kCostUnit;
+                    if (phase1Vis_[nc] && !(nx <= 1 && ny <= 1)) stepCost += 2 * kCostUnit; // retrace penalty
                     if (d + stepCost < hStart[nc])
                     {
                         hStart[nc] = d + stepCost;
                         pq.push({hStart[nc], nc});
+                    }
+                }
+                if (cfg_.enableDiagonal)
+                {
+                    const int ddx[4] = {1, 1, -1, -1};
+                    const int ddy[4] = {1, -1, 1, -1};
+                    const Dir d1[4] = {D_E, D_E, D_W, D_W};
+                    const Dir d2[4] = {D_N, D_S, D_N, D_S};
+                    for (int k = 0; k < 4; ++k)
+                    {
+                        int nx = cx + ddx[k], ny = cy + ddy[k];
+                        if (nx < 0 || ny < 0 || nx >= MAZE_W || ny >= MAZE_H) continue;
+                        bool open1 = !curSnap.wall(cx, cy, d1[k]) && !curSnap.wall(cx + ddx[k], cy, d2[k]);
+                        bool open2 = !curSnap.wall(cx, cy, d2[k]) && !curSnap.wall(cx, cy + ddy[k], d1[k]);
+                        if (!open1 && !open2) continue;
+                        int nc = idx(nx, ny);
+                        Cost stepCost = 360;
+                        if (phase1Vis_[nc] && !(nx <= 1 && ny <= 1)) stepCost += 2 * kCostUnit;
+                        if (d + stepCost < hStart[nc])
+                        {
+                            hStart[nc] = d + stepCost;
+                            pq.push({hStart[nc], nc});
+                        }
                     }
                 }
             }
